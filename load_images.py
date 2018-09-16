@@ -125,20 +125,19 @@ def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_forward_fns):
 
     all_parent_offsets = tf.concat([mismatch_parent_offsets,match_parent_offsets],axis=0)
     all_child_offsets = tf.concat([mismatch_child_offsets,match_child_offsets],axis=0)
-    mat_sel = tf.stack([all_parent_offsets,all_child_offsets])
+    mat_sel = tf.stack([all_child_offsets, all_parent_offsets])
     print(all_parent_ids.shape)
     print(mat_sel.shape)
-    res_vecs = match_forward_fns.multiply_selection(mat_sel,all_parents)
+    res_vecs = match_forward_fns.multiply_selection(mat_sel,all_children)
 
-    logit_assignment = tf.nn.sigmoid(tf.reduce_mean(all_children * res_vecs,axis=1))
+    logit_assignment = tf.nn.sigmoid(tf.reduce_mean(all_parents * res_vecs,axis=1))
     cost = tf.nn.sigmoid_cross_entropy_with_logits(logits=logit_assignment,labels=match_value)
     loss = tf.reduce_mean(cost)
 
     return loss
 
 def learn_fn():
-    lay12_match_fns = ManyMatricies("lay1-2_match_fns", NUM_CAPS_FIRST_LAYER, NUM_CAPS_SECOND_LAYER, CAPS_SIZE_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER)
-    #lay21_match_fns = ManyMatricies("lay2-1_match_fns", CAPS_SIZE_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER, CAPS_SIZE_FIRST_LAYER)
+    lay21_match_fns = ManyMatricies("lay2-1_match_fns", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER, CAPS_SIZE_FIRST_LAYER)
 
     in_img = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
 
@@ -151,6 +150,7 @@ def learn_fn():
     iter = ds.make_one_shot_iterator()
     in_img = iter.get_next()'''
 
+
     pre_conv = make_layer("pre_conv",(PRE_CONV_SIZE, PRE_CONV_SIZE, IMAGE_CHANNELS, PRE_OUT_DIM))
     pre_out = tf.nn.relu(tf.nn.conv2d(in_img,pre_conv,(1,PRE_STRIDE_SIZE,PRE_STRIDE_SIZE,1),CONV_STRATEGY))
 
@@ -161,7 +161,12 @@ def learn_fn():
     capsuled_lay1 = tf.reshape(lay1conv_out,(BATCH_SIZE, conv_size, conv_size, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_FIRST_LAYER))
     squashed_lay1 = squash_last_dim(capsuled_lay1)
     capsule_weights = make_caps_weights((BATCH_SIZE, conv_size, conv_size, NUM_CAPS_FIRST_LAYER, 1))
-    weighted_lay1 = squashed_lay1 * capsule_weights
+    lay1caps_mask = tf.ones((BATCH_SIZE, conv_size, conv_size, NUM_CAPS_FIRST_LAYER, 1))
+    lay1caps_mask = tf.nn.dropout(lay1caps_mask,0.2,noise_shape=(1,1,1,NUM_CAPS_FIRST_LAYER,1))
+    #with tf.Session() as sess:
+    #    print("mask ",sess.run(mask))
+    #lay1caps_mask = tf.reshape(lay1caps_mask,(BATCH_SIZE,conv_size*conv_size,NUM_CAPS_FIRST_LAYER,1))
+    weighted_lay1 = squashed_lay1 * capsule_weights# * lay1caps_mask
 
     lay2fullconect = make_layer("lay2fullconect",(TOT_FIRST_SIZE*conv_size*conv_size,TOT_SECOND_SIZE))
     combined_lay1 = tf.reshape(weighted_lay1,(BATCH_SIZE, TOT_FIRST_SIZE*conv_size*conv_size))
@@ -172,13 +177,8 @@ def learn_fn():
     #print(capsuled_lay1.shape)
     #print(lay2_capsules.shape)
     #exit(1)
-    mask = tf.ones((BATCH_SIZE,conv_size*conv_size,NUM_CAPS_FIRST_LAYER))
-    mask = tf.nn.dropout(mask,0.2,noise_shape=(BATCH_SIZE,1,NUM_CAPS_FIRST_LAYER))
-    #with tf.Session() as sess:
-    #    print("mask ",sess.run(mask))
-    mask = tf.reshape(mask,(BATCH_SIZE,conv_size*conv_size,NUM_CAPS_FIRST_LAYER,1))
-    capsuled_lay1 = capsuled_lay1 * mask
-    loss = discriminate_fc(capsuled_lay1,lay2_capsules,lay12_match_fns)
+    #capsuled_lay1 = capsuled_lay1 * mask
+    loss = discriminate_fc(capsuled_lay1,lay2_capsules,lay21_match_fns)
     optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
     optim = optimizer.minimize(loss)
 
@@ -187,17 +187,18 @@ def learn_fn():
         sess.run(tf.global_variables_initializer())
         #loss_val,opt_val = sess.run([loss,optim])
         while True:
-            np.random.shuffle(train_data)
-            loss_sum = 0
-            train_count = 0
-            for x in range(5000):
-                loss_val,opt_val = sess.run([loss,optim],feed_dict={
-                    in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
-                })
-                loss_sum += loss_val
-                train_count += 1
-            #print(np.any(np.isnan(caps1)))
-            print("loss: {}".format(loss_sum/train_count))
+            for x in range(3):
+                np.random.shuffle(train_data)
+                loss_sum = 0
+                train_count = 0
+                for x in range(5000):
+                    loss_val,opt_val = sess.run([loss,optim],feed_dict={
+                        in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
+                    })
+                    loss_sum += loss_val
+                    train_count += 1
+                #print(np.any(np.isnan(caps1)))
+                print("loss: {}".format(loss_sum/train_count))
             all_test_out = []
             all_train_out = []
             for x in range(0,1000,BATCH_SIZE):
