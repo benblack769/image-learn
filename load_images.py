@@ -85,7 +85,7 @@ class ManyMatricies:
         return mul_matricies
 
 
-def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_forward_fns):
+def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_forward_fns,match_backward_fns):
     '''
     makes a discrimination loss function based off different items in the batch
 
@@ -125,19 +125,22 @@ def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_forward_fns):
 
     all_parent_offsets = tf.concat([mismatch_parent_offsets,match_parent_offsets],axis=0)
     all_child_offsets = tf.concat([mismatch_child_offsets,match_child_offsets],axis=0)
-    mat_sel = tf.stack([all_child_offsets, all_parent_offsets])
-    print(all_parent_ids.shape)
-    print(mat_sel.shape)
-    res_vecs = match_forward_fns.multiply_selection(mat_sel,all_children)
+    mat_sel12 = tf.stack([all_parent_offsets, all_child_offsets])
+    mat_sel21 = tf.stack([all_child_offsets, all_parent_offsets])
+    #print(all_parent_ids.shape)
+    #print(mat_sel.shape)
+    res_vecs = match_forward_fns.multiply_selection(mat_sel21,all_children)
+    res2vecs = match_backward_fns.multiply_selection(mat_sel12,all_parents)
 
-    logit_assignment = tf.nn.sigmoid(tf.reduce_mean(all_parents * res_vecs,axis=1))
+    logit_assignment = tf.nn.sigmoid(tf.reduce_mean(res2vecs * res_vecs,axis=1))
     cost = tf.nn.sigmoid_cross_entropy_with_logits(logits=logit_assignment,labels=match_value)
     loss = tf.reduce_mean(cost)
 
     return loss
 
 def learn_fn():
-    lay21_match_fns = ManyMatricies("lay2-1_match_fns", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER, CAPS_SIZE_FIRST_LAYER)
+    lay21_match_fns = ManyMatricies("lay2-1_match_fns", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER, DISCRIM_OUTPUT_SIZE)
+    lay12_match_fns = ManyMatricies("lay1-2_match_fns", NUM_CAPS_FIRST_LAYER, NUM_CAPS_SECOND_LAYER, CAPS_SIZE_FIRST_LAYER, DISCRIM_OUTPUT_SIZE)
 
     in_img = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
 
@@ -178,7 +181,7 @@ def learn_fn():
     #print(lay2_capsules.shape)
     #exit(1)
     #capsuled_lay1 = capsuled_lay1 * mask
-    loss = discriminate_fc(capsuled_lay1,lay2_capsules,lay21_match_fns)
+    loss = discriminate_fc(capsuled_lay1,lay2_capsules,lay21_match_fns,lay12_match_fns)
     optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
     optim = optimizer.minimize(loss)
 
