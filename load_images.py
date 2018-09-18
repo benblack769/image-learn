@@ -6,7 +6,7 @@ import sys
 mnist = tf.keras.datasets.mnist
 from sklearn import svm    			# To fit the svm classifier\
 
-BATCH_SIZE = 64 #must be at least 2, and bigger is better.
+BATCH_SIZE = 8 #must be at least 2, and bigger is better.
 
 IMAGE_WIDTH = 28
 #IMAGE_SIZE = IMAGE_WIDTH*IMAGE_WIDTH
@@ -17,7 +17,7 @@ PRE_CONV_SIZE = 5 # 2 in each direction
 PRE_STRIDE_SIZE = 1 # consider making 2
 
 FIRST_CONV_SIZE = 5# 2 in each direction
-FIRST_STRIDE_SIZE = 2
+FIRST_STRIDE_SIZE = 1
 NUM_CAPS_FIRST_LAYER = 4
 CAPS_SIZE_FIRST_LAYER = 16
 TOT_FIRST_SIZE = NUM_CAPS_FIRST_LAYER * CAPS_SIZE_FIRST_LAYER
@@ -142,6 +142,18 @@ def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_fns_all):
 
     return loss
 
+def make_gather_conv(conv_size,input_size):
+    res = []
+    conv_size_sqr = conv_size*conv_size
+    for x in range(conv_size):
+        for y in range(conv_size):
+            for i in range(input_size):
+                for j in range(input_size*conv_size_sqr):
+                    res.append(int(j // input_size == x * conv_size + y))
+    res_np = np.asarray(res,dtype=np.float32)
+    res_reshaped = np.reshape(res_np,(conv_size,conv_size,input_size,conv_size*conv_size*input_size))
+    return tf.constant(res_reshaped,dtype=tf.float32)
+
 def learn_fn():
     lay21_match_fn_hid = ManyMatricies("lay2-1_match_fn_hid", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER, DISCRIM_HIDDEN_SIZE)
     lay21_match_fn_out = ManyMatricies("lay2-1_match_fn_out", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, DISCRIM_HIDDEN_SIZE, DISCRIM_OUTPUT_SIZE)
@@ -171,37 +183,46 @@ def learn_fn():
     in_img = iter.get_next()'''
 
 
-    pre_conv = make_layer("pre_conv",(PRE_CONV_SIZE, PRE_CONV_SIZE, IMAGE_CHANNELS, PRE_OUT_DIM))
-    pre_out = tf.nn.relu(tf.nn.conv2d(in_img,pre_conv,(1,PRE_STRIDE_SIZE,PRE_STRIDE_SIZE,1),CONV_STRATEGY))
+    pre_conv_through = make_layer("pre_conv_through",(PRE_CONV_SIZE, PRE_CONV_SIZE, IMAGE_CHANNELS, PRE_OUT_DIM))
+    pre_conv_cmp = make_layer("pre_conv_cmp",(PRE_CONV_SIZE, PRE_CONV_SIZE, IMAGE_CHANNELS, PRE_OUT_DIM))
 
-    lay1conv = make_layer("lay1conv",(FIRST_CONV_SIZE, FIRST_CONV_SIZE, PRE_OUT_DIM, TOT_FIRST_SIZE))
-    lay1_1x1_conv = make_layer("lay1_1x1_conv",(1, 1, TOT_FIRST_SIZE, TOT_FIRST_SIZE))
-    print(lay1conv.shape)
-    lay1conv_out = tf.nn.conv2d(pre_out,lay1conv,(1,FIRST_STRIDE_SIZE,FIRST_STRIDE_SIZE,1),CONV_STRATEGY)
-    conv_size = lay1conv_out.shape[1]
-    capsuled_lay1 = tf.reshape(lay1conv_out,(BATCH_SIZE, conv_size, conv_size, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_FIRST_LAYER))
-    squashed_lay1 = squash_last_dim(lay1conv_out)
-    deep_lay1 = tf.nn.conv2d(squashed_lay1,lay1_1x1_conv,(1,1,1,1),"VALID")
-    #capsule_weights = make_caps_weights((BATCH_SIZE, conv_size, conv_size, NUM_CAPS_FIRST_LAYER, 1))
-    #lay1caps_mask = tf.ones((BATCH_SIZE, conv_size, conv_size, NUM_CAPS_FIRST_LAYER, 1))
-    #lay1caps_mask = tf.nn.dropout(lay1caps_mask,0.2,noise_shape=(1,1,1,NUM_CAPS_FIRST_LAYER,1))
-    #with tf.Session() as sess:
-    #    print("mask ",sess.run(mask))
-    #lay1caps_mask = tf.reshape(lay1caps_mask,(BATCH_SIZE,conv_size*conv_size,NUM_CAPS_FIRST_LAYER,1))
-    weighted_lay1 = tf.nn.relu(deep_lay1) #* capsule_weights# * lay1caps_mask
+    pre_conv_through_out = tf.nn.relu(tf.nn.conv2d(in_img,pre_conv_through,(1,1,1,1),CONV_STRATEGY))
+    pre_conv_cmp_out = tf.nn.relu(tf.nn.conv2d(in_img,pre_conv_cmp,(1,1,1,1),CONV_STRATEGY))
 
-    lay2fullconect = make_layer("lay2fullconect",(TOT_FIRST_SIZE*conv_size*conv_size,TOT_SECOND_SIZE))
-    combined_lay1 = tf.reshape(weighted_lay1,(BATCH_SIZE, TOT_FIRST_SIZE*conv_size*conv_size))
-    lay2_raw = tf.matmul(combined_lay1,lay2fullconect)
-    lay2_capsules = tf.reshape(lay2_raw,(BATCH_SIZE,NUM_CAPS_SECOND_LAYER,CAPS_SIZE_SECOND_LAYER))
+    cmp_final = make_layer("cmp_final",(1, 1, PRE_OUT_DIM, DISCRIM_OUTPUT_SIZE))
+    cmp_final_out = tf.nn.conv2d(pre_conv_cmp_out,cmp_final,(1,1,1,1),CONV_STRATEGY)
 
-    capsuled_lay1 = tf.reshape(capsuled_lay1,(BATCH_SIZE,conv_size*conv_size,NUM_CAPS_FIRST_LAYER,CAPS_SIZE_FIRST_LAYER))
-    #print(capsuled_lay1.shape)
-    #print(lay2_capsules.shape)
-    #exit(1)
-    #capsuled_lay1 = capsuled_lay1 * mask
-    loss = discriminate_fc(capsuled_lay1,lay2_capsules,match_lays)
-    optimizer = tf.train.RMSPropOptimizer(learning_rate=ADAM_learning_rate)
+    first_layer_conv = make_layer("first_layer_conv",(FIRST_CONV_SIZE, FIRST_CONV_SIZE, PRE_OUT_DIM, TOT_FIRST_SIZE))
+    first_layer_out = tf.nn.conv2d(pre_conv_through_out,first_layer_conv,(1,FIRST_STRIDE_SIZE,FIRST_STRIDE_SIZE,1),CONV_STRATEGY)
+    first_layer_activ = tf.nn.relu(first_layer_out)
+
+    first_layer_fin = make_layer("first_layer_conv", (1, 1, TOT_FIRST_SIZE, DISCRIM_OUTPUT_SIZE*FIRST_CONV_SIZE*FIRST_CONV_SIZE))
+    first_layer_fin_out = tf.nn.conv2d(first_layer_activ,first_layer_fin,(1,1,1,1),CONV_STRATEGY)
+
+    cmp_final_copy_fn = make_gather_conv(FIRST_CONV_SIZE,DISCRIM_OUTPUT_SIZE)
+    copied_cmp_fin = tf.nn.conv2d(cmp_final_out,cmp_final_copy_fn,(1,1,1,1),CONV_STRATEGY)
+
+    conv_size = first_layer_activ.shape[1]
+
+    cmp_reshaped = tf.reshape(copied_cmp_fin,(BATCH_SIZE*conv_size*conv_size*FIRST_CONV_SIZE*FIRST_CONV_SIZE,DISCRIM_OUTPUT_SIZE))
+    first_final_reshaped = tf.reshape(first_layer_fin_out,(BATCH_SIZE*conv_size*conv_size*FIRST_CONV_SIZE*FIRST_CONV_SIZE,DISCRIM_OUTPUT_SIZE))
+
+    match_len = cmp_reshaped.shape.as_list()[0]
+    avoid_match_len = match_len // BATCH_SIZE
+    mismatch_batch_offset = tf.random_uniform((1,),minval=avoid_match_len,maxval=match_len-avoid_match_len,dtype=tf.int32)
+    mismatch_batch_offset = tf.reshape(mismatch_batch_offset,[])
+    mismatch_vals = tf.concat([first_final_reshaped[mismatch_batch_offset:],first_final_reshaped[:mismatch_batch_offset]],axis=0)
+
+    first_vals = tf.concat([first_final_reshaped,mismatch_vals],axis=0)
+    cmp_vals = tf.concat([cmp_reshaped,cmp_reshaped],axis=0)
+
+    match_value = tf.concat([tf.ones(match_len),tf.zeros(match_len)],axis=0)
+
+    logit_assignment = tf.nn.sigmoid(tf.reduce_mean(first_vals * cmp_vals,axis=1)*0.1)
+    cost = tf.nn.sigmoid_cross_entropy_with_logits(logits=logit_assignment,labels=match_value)
+    loss = tf.reduce_mean(cost)
+
+    optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
     optim = optimizer.minimize(loss)
 
     train_data = np.copy(x_train)
@@ -209,11 +230,11 @@ def learn_fn():
         sess.run(tf.global_variables_initializer())
         #loss_val,opt_val = sess.run([loss,optim])
         while True:
-            for x in range(5):
+            for x in range(20):
                 np.random.shuffle(train_data)
                 loss_sum = 0
                 train_count = 0
-                for x in range(1000):
+                for x in range(100):
                     loss_val,opt_val = sess.run([loss,optim],feed_dict={
                         in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
                     })
@@ -221,7 +242,7 @@ def learn_fn():
                     train_count += 1
                 #print(np.any(np.isnan(caps1)))
                 print("loss: {}".format(loss_sum/train_count))
-            all_test_out = []
+            '''all_test_out = []
             all_train_out = []
             for x in range(0,1000,BATCH_SIZE):
                 class_out = sess.run(lay2_raw,feed_dict={
@@ -246,7 +267,7 @@ def learn_fn():
             print(tot_test_cmp.shape)
             score = logit_model.score(tot_test_out,tot_test_cmp)
             print("supervised score: {}".format(score))
-            #print(class_out)
+            #print(class_out)'''
             sys.stdout.flush()
 
 learn_fn()
