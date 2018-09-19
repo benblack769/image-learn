@@ -116,22 +116,6 @@ def make_gather_conv(conv_size,input_size):
     return tf.constant(res_reshaped,dtype=tf.float32)
 
 def learn_fn():
-    lay21_match_fn_hid = ManyMatricies("lay2-1_match_fn_hid", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, CAPS_SIZE_SECOND_LAYER, DISCRIM_HIDDEN_SIZE)
-    lay21_match_fn_out = ManyMatricies("lay2-1_match_fn_out", NUM_CAPS_SECOND_LAYER, NUM_CAPS_FIRST_LAYER, DISCRIM_HIDDEN_SIZE, DISCRIM_OUTPUT_SIZE)
-    lay12_match_fn_hid = ManyMatricies("lay1-2_match_fn_hid", NUM_CAPS_FIRST_LAYER, NUM_CAPS_SECOND_LAYER, CAPS_SIZE_FIRST_LAYER, DISCRIM_HIDDEN_SIZE)
-    lay12_match_fn_out = ManyMatricies("lay1-2_match_fn_out", NUM_CAPS_FIRST_LAYER, NUM_CAPS_SECOND_LAYER, DISCRIM_HIDDEN_SIZE, DISCRIM_OUTPUT_SIZE)
-
-    match_lays = {
-        "21":{
-            "hid":lay21_match_fn_hid,
-            "out":lay21_match_fn_out,
-        },
-        "12":{
-            "hid":lay12_match_fn_hid,
-            "out":lay12_match_fn_out,
-        }
-    }
-
     in_img = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
 
     '''ds = tf.data.Dataset.from_tensor_slices(x_train)
