@@ -47,45 +47,6 @@ def make_layer(name,shape):
     rand_weight = np.reshape(rand_weight_vals,shape)
     return tf.Variable(rand_weight,name=name)
 
-def squash_last_dim(arr5d):
-    return tf.nn.relu(arr5d)
-    #sqr_size = tf.reduce_sum(arr5d * arr5d,axis=4)
-    #sqr_size = tf.reshape(sqr_size,sqr_size.shape.as_list()+[1])
-    #epsilon = np.float32(10e-7)
-    #return (sqr_size / (np.float32(1.0) + sqr_size)) * (arr5d / tf.maximum(tf.sqrt(sqr_size),epsilon))
-
-def make_caps_weights(shape):
-    return tf.ones(shape)
-
-class ManyMatricies:
-    def __init__(self,name,num_inputs, num_outputs, input_size, output_size):
-        self.num_inputs = num_inputs
-        self.num_outputs = num_outputs
-        self.input_size = input_size
-        self.output_size = output_size
-        self.mattensor = make_layer(name, (num_inputs, num_outputs, input_size, output_size))
-
-    def select_matricies(self,matindicies_pairs):
-        '''
-        args: matindicies_pairs should have a (2, n) shape
-        input matrix indicies in x[0], output in x[1]
-        '''
-        flat_mattenor = tf.reshape(self.mattensor,(self.num_inputs*self.num_outputs,self.input_size,self.output_size))
-        flat_matindiices = matindicies_pairs[0] * self.num_outputs + matindicies_pairs[1]
-        #with tf.Session() as sess:
-        #    print("hithere",self.num_outputs)
-        #    print("argvar",sess.run(flat_matindiices))
-        #    print("argvar",sess.run(matindicies_pairs[0]))
-        #    print("argvar",sess.run(matindicies_pairs[1]))
-        return tf.gather(flat_mattenor,flat_matindiices,axis=0)
-
-    def multiply_selection(self,matindicies_pairs,matrix):
-        # see above docs for matindicies_pairs input format
-        sel_matr = self.select_matricies(matindicies_pairs)
-        mul_matricies = tf.einsum("aij,ai->aj",sel_matr,matrix)
-        return mul_matricies
-
-
 def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_fns_all):
     '''
     makes a discrimination loss function based off different items in the batch
