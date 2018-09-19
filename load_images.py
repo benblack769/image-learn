@@ -47,62 +47,6 @@ def make_layer(name,shape):
     rand_weight = np.reshape(rand_weight_vals,shape)
     return tf.Variable(rand_weight,name=name)
 
-def discriminate_fc(parent_capsule_batch,child_capsule_batch,match_fns_all):
-    '''
-    makes a discrimination loss function based off different items in the batch
-
-    ASSUMPTION: every child is connected to every parent
-    '''
-    batch_size = parent_capsule_batch.shape[0]
-    parent_caps_locs = parent_capsule_batch.shape[1]
-    parent_num_capsules = parent_capsule_batch.shape[2]
-    child_num_capsules = child_capsule_batch.shape[1]
-    par_caps_size = parent_capsule_batch.shape[3]
-    child_caps_size = child_capsule_batch.shape[2]
-
-    combined_parents = tf.reshape(parent_capsule_batch,(parent_num_capsules*batch_size*parent_caps_locs,par_caps_size))
-    combined_children = tf.reshape(child_capsule_batch,(child_num_capsules*batch_size,child_caps_size))
-
-    mismatch_parent_batches = tf.random_uniform((NUM_MISMATCHES,),dtype=tf.int32,minval=0,maxval=batch_size)
-    mismatch_parent_locs = tf.random_uniform((NUM_MISMATCHES,),dtype=tf.int32,minval=0,maxval=parent_caps_locs)
-    mismatch_child_batches = tf.random_uniform((NUM_MISMATCHES,),dtype=tf.int32,minval=0,maxval=batch_size)
-    mismatch_parent_offsets = tf.random_uniform((NUM_MISMATCHES,),dtype=tf.int32,minval=0,maxval=parent_num_capsules)
-    mismatch_child_offsets = tf.random_uniform((NUM_MISMATCHES,),dtype=tf.int32,minval=0,maxval=child_num_capsules)
-    mismatch_parent_ids = (mismatch_parent_batches*parent_caps_locs + mismatch_parent_locs)*parent_num_capsules + mismatch_parent_offsets
-    mismatch_child_ids = mismatch_child_batches*child_num_capsules + mismatch_child_offsets
-
-    match_batches = tf.random_uniform((NUM_MATCHES,),dtype=tf.int32,minval=0,maxval=batch_size)
-    match_parent_locs = tf.random_uniform((NUM_MATCHES,),dtype=tf.int32,minval=0,maxval=parent_caps_locs)
-    match_parent_offsets = tf.random_uniform((NUM_MATCHES,),dtype=tf.int32,minval=0,maxval=parent_num_capsules)
-    match_child_offsets = tf.random_uniform((NUM_MATCHES,),dtype=tf.int32,minval=0,maxval=child_num_capsules)
-    match_parent_ids = (match_batches*parent_caps_locs + match_parent_locs)*parent_num_capsules + match_parent_offsets
-    match_child_ids = match_batches*child_num_capsules + match_child_offsets
-    all_parent_ids = tf.concat([mismatch_parent_ids,match_parent_ids],axis=0)
-    all_child_ids = tf.concat([mismatch_child_ids,match_child_ids],axis=0)
-
-    all_parents = tf.gather(combined_parents,all_parent_ids,axis=0)
-    all_children = tf.gather(combined_children,all_child_ids,axis=0)
-
-    match_value = tf.concat([tf.zeros(NUM_MISMATCHES),tf.ones(NUM_MATCHES)],axis=0)
-
-    all_parent_offsets = tf.concat([mismatch_parent_offsets,match_parent_offsets],axis=0)
-    all_child_offsets = tf.concat([mismatch_child_offsets,match_child_offsets],axis=0)
-    mat_sel12 = tf.stack([all_parent_offsets, all_child_offsets])
-    mat_sel21 = tf.stack([all_child_offsets, all_parent_offsets])
-    #print(all_parent_ids.shape)
-    #print(mat_sel.shape)
-    hid21 = tf.nn.relu(match_fns_all["21"]["hid"].multiply_selection(mat_sel21,all_children))
-    hid12 = tf.nn.relu(match_fns_all["12"]["hid"].multiply_selection(mat_sel12,all_parents))
-
-    out21 = match_fns_all["21"]["out"].multiply_selection(mat_sel21,hid21)
-    out12 = match_fns_all["12"]["out"].multiply_selection(mat_sel12,hid12)
-
-    logit_assignment = tf.nn.sigmoid(tf.reduce_mean(out12 * out21,axis=1)*0.1)
-    cost = tf.nn.sigmoid_cross_entropy_with_logits(logits=logit_assignment,labels=match_value)
-    loss = tf.reduce_mean(cost)
-
-    return loss
-
 def make_gather_conv(conv_size,input_size):
     res = []
     conv_size_sqr = conv_size*conv_size
