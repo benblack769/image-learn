@@ -3,6 +3,8 @@ import numpy as np
 from operator import mul
 from functools import reduce
 import sys
+import os
+from PIL import Image
 mnist = tf.keras.datasets.mnist
 from sklearn import svm    			# To fit the svm classifier\
 
@@ -26,7 +28,7 @@ NUM_CAPS_SECOND_LAYER = 5
 CAPS_SIZE_SECOND_LAYER = 24
 TOT_SECOND_SIZE = NUM_CAPS_SECOND_LAYER * CAPS_SIZE_SECOND_LAYER
 
-CONV_STRATEGY = "VALID" # "VALID" or "SAME"
+CONV_STRATEGY = "SAME" # "VALID" or "SAME"
 
 NUM_MATCHES = 128
 NUM_MISMATCHES = 128
@@ -114,49 +116,86 @@ def learn_fn():
     optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
     optim = optimizer.minimize(loss)
 
+
+    GEN_HID_LAYER_SIZE = 32
+    GEN_CONV_SIZE = 3
+    BASE_SIZE = 28
+    HID_SIZE = 28#BASE_SIZE - GEN_CONV_SIZE + 1
+    gen_deconv_lay1 = make_layer("gen_lay1",(GEN_CONV_SIZE, GEN_CONV_SIZE, GEN_HID_LAYER_SIZE, TOT_FIRST_SIZE))
+    deconv_1 = tf.nn.conv2d_transpose(tf.stop_gradient(first_layer_out), gen_deconv_lay1,
+         [BATCH_SIZE, HID_SIZE, HID_SIZE, GEN_HID_LAYER_SIZE], [1, 1, 1, 1], padding='SAME')
+
+    hid_lay = tf.nn.relu(deconv_1)
+    OUT_CONV_SIZE = 3
+    OUT_SIZE = 32
+    gen_deconv_lay2 = make_layer("gen_lay2",(OUT_CONV_SIZE, OUT_CONV_SIZE, OUT_SIZE, GEN_HID_LAYER_SIZE))
+    deconv_2 = tf.nn.conv2d_transpose(hid_lay, gen_deconv_lay2,
+         [BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, OUT_SIZE], [1, 1, 1, 1], padding='SAME')
+
+    out_lay = tf.nn.relu(deconv_2)
+    gen_deconv_lay2 = make_layer("gen_lay3",(1, 1, OUT_SIZE, 1))
+    fin_lay = tf.nn.sigmoid(0.01*tf.nn.conv2d(out_lay,gen_deconv_lay2,[1,1,1,1],'SAME'))
+
+    gen_cost = tf.nn.sigmoid_cross_entropy_with_logits(labels=in_img,logits=fin_lay)
+    gen_loss = tf.reduce_mean(gen_cost)
+    gen_optim = optimizer.minimize(gen_loss)
+
     train_data = np.copy(x_train)
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
+
+        save_folder = "examples/orig/"
+        os.makedirs(save_folder,exist_ok=True)
+        for x in range(3):
+            batch_data = x_test[x*BATCH_SIZE:(x+1)*BATCH_SIZE]
+            for y in range(BATCH_SIZE):
+                img_name = str(x*BATCH_SIZE+y)+".png"
+                image_vec = (batch_data[y]*255.0).astype(np.uint8)
+                img = Image.fromarray(image_vec,mode="L")
+                img.save(save_folder+img_name)
         #loss_val,opt_val = sess.run([loss,optim])
-        while True:
+        for iteration_run in range(10000):
             for x in range(20):
                 np.random.shuffle(train_data)
                 loss_sum = 0
                 train_count = 0
                 for x in range(100):
                     loss_val,opt_val = sess.run([loss,optim],feed_dict={
-                        in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
+                        in_img: np.reshape(train_data[x*BATCH_SIZE:(x+1)*BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
                     })
                     loss_sum += loss_val
                     train_count += 1
                 #print(np.any(np.isnan(caps1)))
                 print("loss: {}".format(loss_sum/train_count))
-            '''all_test_out = []
-            all_train_out = []
-            for x in range(0,1000,BATCH_SIZE):
-                class_out = sess.run(lay2_raw,feed_dict={
-                    in_img: np.reshape(x_test[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
+
+            for x in range(20):
+                np.random.shuffle(train_data)
+                loss_sum = 0
+                train_count = 0
+                for x in range(100):
+                    loss_val,opt_val = sess.run([gen_loss,gen_optim],feed_dict={
+                        in_img: np.reshape(train_data[x*BATCH_SIZE:(x+1)*BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
+                    })
+                    loss_sum += loss_val
+                    train_count += 1
+                #print(np.any(np.isnan(caps1)))
+                print("generate loss: {}".format(loss_sum/train_count))
+
+            save_folder = "examples/run_{}/".format(iteration_run)
+            os.makedirs(save_folder,exist_ok=True)
+            for x in range(3):
+                batch_data = x_test[x*BATCH_SIZE:(x+1)*BATCH_SIZE]
+                img_data = sess.run(fin_lay,feed_dict={
+                    in_img: np.reshape(batch_data,(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
                 })
-                train_out = sess.run(lay2_raw,feed_dict={
-                    in_img: np.reshape(x_train[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
-                })
-                all_test_out.append(class_out)
-                all_train_out.append(train_out)
+                img_data = np.reshape(img_data,(BATCH_SIZE,IMAGE_WIDTH,IMAGE_WIDTH))
+                for y in range(BATCH_SIZE):
+                    img_name = str(x*BATCH_SIZE+y)+".png"
+                    image_vec = (img_data[y]*255.0).astype(np.uint8)
+                    img = Image.fromarray(image_vec,mode="L")
+                    img.save(save_folder+img_name)
 
-            tot_test_out = np.concatenate(all_test_out,axis=0)
-            tot_train_out = np.concatenate(all_train_out,axis=0)
 
-            tot_test_cmp = y_test[:len(tot_test_out)]
-            print(tot_test_cmp.shape)
-            tot_train_cmp = y_train[:len(tot_train_out)]
-
-            logit_model = svm.SVC(kernel='linear')
-            logit_model.fit(tot_train_out,tot_train_cmp)
-            print(tot_test_out.shape)
-            print(tot_test_cmp.shape)
-            score = logit_model.score(tot_test_out,tot_test_cmp)
-            print("supervised score: {}".format(score))
-            #print(class_out)'''
             sys.stdout.flush()
 
 learn_fn()
