@@ -108,11 +108,14 @@ def learn_fn():
     match_value = tf.concat([tf.ones(match_len),tf.zeros(match_len)],axis=0)
 
     logit_assignment = tf.nn.sigmoid(tf.reduce_mean(first_vals * cmp_vals,axis=1)*0.1)
-    cost = tf.nn.sigmoid_cross_entropy_with_logits(logits=logit_assignment,labels=match_value)
-    loss = tf.reduce_mean(cost)
+    first_cost = tf.nn.sigmoid_cross_entropy_with_logits(logits=logit_assignment,labels=match_value)
+    first_loss = tf.reduce_mean(first_cost)
 
-    optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
-    optim = optimizer.minimize(loss)
+    first_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
+    first_optim = first_optimizer.minimize(first_loss)
+
+    next_input = tf.stop_gradient(first_layer_out)
+
 
     train_data = np.copy(x_train)
     with tf.Session() as sess:
@@ -124,7 +127,7 @@ def learn_fn():
                 loss_sum = 0
                 train_count = 0
                 for x in range(100):
-                    loss_val,opt_val = sess.run([loss,optim],feed_dict={
+                    loss_val,opt_val = sess.run([first_loss,first_optim],feed_dict={
                         in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
                     })
                     loss_sum += loss_val
