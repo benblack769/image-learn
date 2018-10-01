@@ -12,7 +12,7 @@ IMAGE_WIDTH = 28
 #IMAGE_SIZE = IMAGE_WIDTH*IMAGE_WIDTH
 
 IMAGE_CHANNELS = 1
-CONV_STRATEGY = "VALID" # "VALID" or "SAME"
+CONV_STRATEGY = "SAME" # "VALID" or "SAME"
 
 ADAM_learning_rate = 0.001
 
@@ -29,13 +29,29 @@ def make_layer(name,shape):
 
 def learn_fn():
     in_img = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
+    mask = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, 1))
+    feed_input = tf.concat([in_img*mask,mask],axis=3)
 
-    conv1_weights = make_layer("conv1_weights",(PRE_CONV_SIZE, PRE_CONV_SIZE, IMAGE_CHANNELS, PRE_OUT_DIM))
+    CONV1_SIZE = 5
+    LAY1_SIZE = 32
+    conv1_weights = make_layer("conv1_weights",(CONV1_SIZE, CONV1_SIZE, IMAGE_CHANNELS+1, LAY1_SIZE))
+    lay1_outs = tf.nn.relu(tf.nn.conv2d(feed_input,conv1_weights,(1,1,1,1),CONV_STRATEGY))
 
-    pre_conv_through_out = tf.nn.relu(tf.nn.conv2d(in_img,pre_conv_through,(1,1,1,1),CONV_STRATEGY))
+    CONV2_SIZE = 3
+    lay2_weights = make_layer("lay2_weights",(CONV2_SIZE, CONV2_SIZE, LAY1_SIZE, LAY1_SIZE))
+    lay2_outs = tf.nn.relu(tf.nn.conv2d(feed_input,lay2_weights,(1,1,1,1),CONV_STRATEGY))
+
+    lay3_weights = make_layer("lay3_weights",(1, 1, LAY1_SIZE, LAY1_SIZE))
+    lay3_outs = tf.nn.relu(tf.nn.conv2d(lay2_outs,lay3_weights,(1,1,1,1),CONV_STRATEGY))
+
+    fin_weights = make_layer("fin_weights",(1, 1, LAY1_SIZE, 1))
+
+    fin_outs = tf.sigmoid(0.01*tf.nn.conv2d(lay3_outs,fin_weights,(1,1,1,1),CONV_STRATEGY))
+    fin_outs = tf.nn.sigmoid_cross_entropy_with_logits()
+    loss = tf.reduce_mean(fin_outs)
 
     first_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
-    first_optim = first_optimizer.minimize(first_loss)
+    first_optim = first_optimizer.minimize(loss)
 
     next_input = tf.stop_gradient(first_layer_out)
 
