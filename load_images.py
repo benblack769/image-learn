@@ -39,7 +39,7 @@ def learn_fn():
 
     CONV2_SIZE = 3
     lay2_weights = make_layer("lay2_weights",(CONV2_SIZE, CONV2_SIZE, LAY1_SIZE, LAY1_SIZE))
-    lay2_outs = tf.nn.relu(tf.nn.conv2d(feed_input,lay2_weights,(1,1,1,1),CONV_STRATEGY))
+    lay2_outs = tf.nn.relu(tf.nn.conv2d(lay1_outs,lay2_weights,(1,1,1,1),CONV_STRATEGY))
 
     lay3_weights = make_layer("lay3_weights",(1, 1, LAY1_SIZE, LAY1_SIZE))
     lay3_outs = tf.nn.relu(tf.nn.conv2d(lay2_outs,lay3_weights,(1,1,1,1),CONV_STRATEGY))
@@ -47,14 +47,13 @@ def learn_fn():
     fin_weights = make_layer("fin_weights",(1, 1, LAY1_SIZE, 1))
 
     fin_outs = tf.sigmoid(0.01*tf.nn.conv2d(lay3_outs,fin_weights,(1,1,1,1),CONV_STRATEGY))
-    fin_outs = tf.nn.sigmoid_cross_entropy_with_logits()
+    fin_outs = tf.nn.sigmoid_cross_entropy_with_logits(labels=in_img,logits=fin_outs)
     loss = tf.reduce_mean(fin_outs)
 
-    first_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
-    first_optim = first_optimizer.minimize(loss)
+    optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
+    optim = optimizer.minimize(loss)
 
-    next_input = tf.stop_gradient(first_layer_out)
-
+    #next_input = tf.stop_gradient(first_layer_out)
 
     train_data = np.copy(x_train)
     with tf.Session() as sess:
@@ -66,8 +65,14 @@ def learn_fn():
                 loss_sum = 0
                 train_count = 0
                 for x in range(100):
-                    loss_val,opt_val = sess.run([first_loss,first_optim],feed_dict={
-                        in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1))
+                    PROB_1 = 0.1
+                    mymask = np.random.uniform(size=(BATCH_SIZE,IMAGE_WIDTH,IMAGE_WIDTH,1)).astype(np.float32)
+                    mymask = np.floor(mymask*(1+PROB_1))
+                    #print(mymask)
+                    #exit(1)
+                    loss_val,opt_val = sess.run([loss,optim],feed_dict={
+                        in_img: np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH, IMAGE_WIDTH, 1)),
+                        mask: mymask,
                     })
                     loss_sum += loss_val
                     train_count += 1
