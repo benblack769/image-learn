@@ -12,7 +12,7 @@ times_max = 1+np.zeros(TOT_SIZE)
 
 for x in range(100000):
     prob_max = times_max/(times_chosen+0.0001)
-    cur_probs = norm_pos((0.001+prob_max))# * np.random.uniform() + 0.001)
+    cur_probs = norm_pos((0.001+prob_max * np.random.uniform(TOT_SIZE)))
     sample = np.random.choice(np.arange(TOT_SIZE),size=SAMP_SIZE,p=cur_probs)
     #print(sample)
     max_val = max(sample)
