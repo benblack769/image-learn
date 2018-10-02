@@ -45,18 +45,30 @@ def sqr(x):
 def mask_info(in_img, dropout_mask):
     CONV1_SIZE = 5
     LAY1_SIZE = 64
-    conv1_weights = make_layer("conv1_weights",(CONV1_SIZE, CONV1_SIZE, IMAGE_CHANNELS, LAY1_SIZE))
-    lay1_outs = tf.nn.relu(tf.nn.conv2d(in_img,conv1_weights,(1,1,1,1),CONV_STRATEGY))
+
+    lay1_outs = tf.layers.conv2d(
+        inputs=in_img,
+        filters=LAY1_SIZE,
+        kernel_size=[CONV1_SIZE, CONV1_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
 
     CONV2_SIZE = 3
-    lay2_weights = make_layer("lay2_weights",(CONV2_SIZE, CONV2_SIZE, LAY1_SIZE, LAY1_SIZE))
-    lay2_outs = tf.nn.relu(tf.nn.conv2d(lay1_outs,lay2_weights,(1,1,1,1),CONV_STRATEGY))
+    lay2_outs = tf.layers.conv2d(
+        inputs=lay1_outs,
+        filters=LAY1_SIZE,
+        kernel_size=[CONV2_SIZE, CONV2_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
 
     DROPLAY_CONV_SIZE = 3
     DROPLAY_CHANNEL_SIZE = 8
-    DROPLAY_OUT_SIZE = (DROPLAY_CHANNEL_SIZE+1)*DROPOUT_CHANNELS
-    droplay_weights = make_layer("droplay_weights",(DROPLAY_CONV_SIZE, DROPLAY_CONV_SIZE, LAY1_SIZE, DROPLAY_CHANNEL_SIZE*DROPOUT_CHANNELS))
-    droplay_outs = tf.nn.conv2d(lay2_outs,droplay_weights,(1,1,1,1),CONV_STRATEGY)
+    droplay_outs = tf.layers.conv2d(
+        inputs=lay2_outs,
+        filters=DROPLAY_CHANNEL_SIZE*DROPOUT_CHANNELS,
+        kernel_size=[DROPLAY_CONV_SIZE, DROPLAY_CONV_SIZE],
+        padding="same",
+        activation=None)
     droplay_outs = tf.reshape(droplay_outs,(INFO_BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS, DROPLAY_CHANNEL_SIZE))
     broadcastable_dmask = tf.reshape(dropout_mask,(INFO_BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS, 1))
     droplay_outs = droplay_outs * broadcastable_dmask
@@ -64,21 +76,58 @@ def mask_info(in_img, dropout_mask):
     tot_droplay_outs = tf.concat([droplay_outs,dropout_mask],axis=3)
 
     CONV3_SIZE = 5
-    lay3_weights = make_layer("lay3_weights",(CONV3_SIZE, CONV3_SIZE, DROPLAY_OUT_SIZE, LAY1_SIZE))
-    lay3_outs = tf.nn.relu(tf.nn.conv2d(tot_droplay_outs,lay3_weights,(1,1,1,1),CONV_STRATEGY))
+    lay3_outs = tf.layers.conv2d(
+        inputs=tot_droplay_outs,
+        filters=LAY1_SIZE,
+        kernel_size=[CONV3_SIZE, CONV3_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
 
     CONV4_SIZE = 5
-    lay4_weights = make_layer("lay4_weights",(CONV4_SIZE, CONV4_SIZE, LAY1_SIZE, LAY1_SIZE))
-    lay4_outs = tf.nn.relu(tf.nn.conv2d(lay3_outs,lay4_weights,(1,1,1,1),CONV_STRATEGY))
+    lay4_outs = tf.layers.conv2d(
+        inputs=lay3_outs,
+        filters=LAY1_SIZE,
+        kernel_size=[CONV4_SIZE, CONV4_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
 
-    fin_weights = make_layer("fin_weights",(1, 1, LAY1_SIZE, IMAGE_CHANNELS))
-
-    fin_outs = tf.sigmoid(0.01*tf.nn.conv2d(lay4_outs,fin_weights,(1,1,1,1),CONV_STRATEGY))
+    fin_outs = tf.layers.conv2d(
+        inputs=lay4_outs,
+        filters=IMAGE_CHANNELS,
+        kernel_size=[1, 1],
+        padding="same",
+        activation=None)
+    fin_outs = tf.sigmoid(0.01*fin_outs)
 
     fin_out_lossess = sqr(in_img-fin_outs)
-    flat_losses = tf.reshape(fin_out_lossess,(INFO_BATCH_SIZE, IMAGE_WIDTH*IMAGE_WIDTH*IMAGE_CHANNELS))
     #fin_out_lossess = tf.nn.sigmoid_cross_entropy_with_logits(labels=in_img,logits=fin_outs)
+    flat_losses = tf.reshape(fin_out_lossess,(INFO_BATCH_SIZE, IMAGE_WIDTH*IMAGE_WIDTH*IMAGE_CHANNELS))
     batch_losses = tf.reduce_mean(flat_losses,axis=0)
+    
+    MASK_CONV1_SIZE = 5
+    mask_lay1_outs = tf.layers.conv2d(
+        inputs=tot_droplay_outs,
+        filters=LAY1_SIZE,
+        kernel_size=[MASK_CONV1_SIZE, MASK_CONV1_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
+
+    MASK_CONV2_SIZE = 5
+    mask_lay2_outs = tf.layers.conv2d(
+        inputs=mask_lay1_outs,
+        filters=LAY1_SIZE,
+        kernel_size=[MASK_CONV2_SIZE, MASK_CONV2_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
+
+    mask_lay2_outs = tf.layers.conv2d(
+        inputs=mask_lay1_outs,
+        filters=DROPOUT_CHANNELS,
+        kernel_size=[1, 1],
+        padding="same",
+        activation=None)
+
+    mask_outs = tf.sigmoid(0.01*mask_lay2_outs)
 
     return fin_outs, batch_losses
 
@@ -131,10 +180,10 @@ def learn_fn():
     generated_mask_expectations = make_mask_fn(mask_current_values)
 
     mask_losses = sqr(generated_mask_expectations-mask_actual_expectations) * mask_actual_selection
-    mask_loss = tf.reduce_sum(mask_losses)
+    mask_loss = tf.reduce_mean(mask_losses)
 
     reconstruction, info_losses = mask_info(in_img, dropout_mask)
-    tot_info_loss = tf.reduce_sum(info_losses)
+    tot_info_loss = tf.reduce_mean(info_losses)
 
     info_optim = optimizer.minimize(tot_info_loss)
 

@@ -1,0 +1,35 @@
+\documentclass{article}
+\usepackage{fullpage}
+\usepackage{amsmath,amsthm,amssymb}
+\usepackage{url}
+\usepackage{cite}
+\usepackage{xcolor,colortbl}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{chains,3d}
+
+\newcommand{\Exp}{\text{exp}}
+
+\begin{document}
+	\hfill \textbf{Vector embeddings of time series data with linear properties}
+	
+	\hfill Ben Black
+	
+	\section{Max sampling}
+	
+	We are trying to make a choice $x$ to maximize some value $v$ in a world with some known state $s$, some unknown state $u$, and a known function $f(x,s,u) = v$. We try to approximate $f(x,s,u)$ by attempting to condition the unknown state as much as possible by the known state. In other words, try to construct a function $$g(x,s) = E[f(x,s,u) | x,s]$$
+	
+	While the number of possible choices of $x$ is reasonably small (thousands), the number of possible values of $s$ is combinatorially large. So we try to approximate $g$ on reasonable values of $s$ with a neural network. 
+	
+	One problem is that $f(x,s,u)$ is expensive, and so computing it thousands of times for each $s$ is undesirable. 
+	
+	So instead we can try to sample the space of $x$ as well as $s$. 
+	
+	To make it easier to sample, we construct a function $h(s,x)$ which outputs the probability of each possibility of $x$ having a higher value $f(x,s,u)$ than any of $x$ in the sample. Note that if the sample is the entire possibility space of $x$, this function will simply output the probability of $x$ being chosen from the whole set, which is easily interpretable. 
+	
+	%Unfortunately, while the choice of $x$ is finite, it is uncomfortably large (thousands) for the target application. So we will try to compute all the values of $g(x,u)$ at once. 
+	
+	%We have an function $f(s,x) = v$, and we want to choose $x$ to maximize the value of $v$. approximate this by using information $l$ which strongly influences $f$. So we invent a function $g$ such that  $g(l,x) \sim f(x)$ So we instead we try to approximate the function $g(l,x) = v$, which we can 
+	
+	
+\end{document}
