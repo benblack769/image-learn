@@ -97,24 +97,58 @@ def mask_info(in_img, dropout_mask):
     droplay_outs = tf.reshape(droplay_outs,(BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS* DROPLAY_CHANNEL_SIZE))
     tot_droplay_outs = tf.concat([droplay_outs,dropout_mask],axis=3)
 
-    CONV3_SIZE = 5
-    lay3_outs = tf.layers.conv2d(
+    POOLED_LAYER_SIZE = 64
+    DROPLAY_POOL_SIZE = 2
+    pooled_outs = tf.layers.average_pooling2d(
         inputs=tot_droplay_outs,
-        filters=LAY1_SIZE,
-        kernel_size=[CONV3_SIZE, CONV3_SIZE],
+        pool_size=[DROPLAY_POOL_SIZE,DROPLAY_POOL_SIZE],
+        strides=DROPLAY_POOL_SIZE,
+    )
+
+    GEN_CONV1_SIZE = 3
+    gen_lay1_outs = tf.layers.conv2d(
+        inputs=pooled_outs,
+        filters=POOLED_LAYER_SIZE,
+        kernel_size=[GEN_CONV1_SIZE, GEN_CONV1_SIZE],
         padding="same",
         activation=tf.nn.relu)
 
-    CONV4_SIZE = 5
-    lay4_outs = tf.layers.conv2d(
-        inputs=lay3_outs,
+    GEN_CONV2_SIZE = 3
+    gen_lay2_outs = tf.layers.conv2d(
+        inputs=gen_lay1_outs,
+        filters=POOLED_LAYER_SIZE,
+        kernel_size=[GEN_CONV2_SIZE, GEN_CONV2_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
+
+    unpooled_genlay2 = unpool(gen_lay2_outs,DROPLAY_POOL_SIZE)
+
+    skip_out_lay = tf.layers.conv2d(
+        inputs=tot_droplay_outs,
         filters=LAY1_SIZE,
-        kernel_size=[CONV4_SIZE, CONV4_SIZE],
+        kernel_size=[1, 1],
+        padding="same",
+        activation=tf.nn.relu)
+
+    tot_unpooled = skip_out_lay + 0.1*unpooled_genlay2
+    GEN_CONV3_SIZE = 3
+    gen_lay3_outs = tf.layers.conv2d(
+        inputs=tot_unpooled,
+        filters=LAY1_SIZE,
+        kernel_size=[GEN_CONV3_SIZE, GEN_CONV3_SIZE],
+        padding="same",
+        activation=tf.nn.relu)
+
+    GEN_CONV4_SIZE = 3
+    gen_lay4_outs = tf.layers.conv2d(
+        inputs=gen_lay3_outs,
+        filters=LAY1_SIZE,
+        kernel_size=[GEN_CONV4_SIZE, GEN_CONV4_SIZE],
         padding="same",
         activation=tf.nn.relu)
 
     fin_outs = tf.layers.conv2d(
-        inputs=lay4_outs,
+        inputs=gen_lay4_outs,
         filters=IMAGE_CHANNELS,
         kernel_size=[1, 1],
         padding="same",
@@ -127,15 +161,15 @@ def mask_info(in_img, dropout_mask):
     batch_losses = tf.reduce_mean(flat_losses,axis=0)
 
     INFO_LAYER_SIZE = 16
-    DROPLAY_POOL_SIZE = 4
+    DROPLAY_POOL_SIZE = 2
     mask_drop_outs = tf.stop_gradient(tot_droplay_outs)
     pooled_outs = tf.layers.average_pooling2d(
         inputs=mask_drop_outs,
         pool_size=[DROPLAY_POOL_SIZE,DROPLAY_POOL_SIZE],
-        strides=DROPLAY_POOL_SIZE
+        strides=DROPLAY_POOL_SIZE,
     )
 
-    MASK_CONV1_SIZE = 2
+    MASK_CONV1_SIZE = 3
     mask_lay1_outs = tf.layers.conv2d(
         inputs=pooled_outs,
         filters=INFO_LAYER_SIZE,
@@ -308,8 +342,8 @@ def learn_fn():
     reconstruction, info_losses, generated_mask_expectations = mask_info(in_img, dropout_mask)
     tot_info_loss = tf.reduce_mean(info_losses)
 
-    #mask_losses = sqr(generated_mask_expectations-mask_actual_max)
-    mask_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=mask_actual_max,logits=generated_mask_expectations)
+    mask_losses = sqr(generated_mask_expectations-mask_actual_max)
+    #mask_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=mask_actual_max,logits=generated_mask_expectations)
     mask_losses = mask_losses * mask_actual_selection
     mask_loss = tf.reduce_sum(mask_losses) / (BATCH_SIZE*SELECTION_SIZE)
 
