@@ -3,15 +3,20 @@ import scipy.ndimage
 import os
 import numpy as np
 import random
+import sys
 import tensorflow as tf
 from PIL import Image
+from make_gather_conv import make_gather_conv
 
-BATCH_SIZE = 4
+BATCH_SIZE = 16
 
-PIXEL_GEOM_P = 0.1
+PIXEL_GEOM_P = 0.2
 MAX_OFFSET = 40
 
-IMAGE_WIDTH = 256
+IMAGE_SIZE = 256
+GATHER_SIZE = 7
+
+ADAM_learning_rate = 0.001
 
 INPUT_CHANNELS = 6
 
@@ -88,55 +93,94 @@ def offset_cmp_vec(offsets):
     OFFSET_LAY2_size = 64
     out1 = tf.layers.dense(offsets,
                 units=OFFSET_LAY1_size,
-                activation=tf.relu)
+                activation=tf.nn.relu)
     out2 = tf.layers.dense(out1,
                 units=OFFSET_LAY2_size,
-                activation=tf.relu)
+                activation=tf.nn.relu)
     out3 = tf.layers.dense(out2,
                 units=OUT_COMPARE_SIZE,
                 activation=None)
     return out3
 
 def image_cmps(images):
-    OUT_LAY1_SIZE = 64
-    mask_lay1_outs = tf.layers.conv2d(
-        inputs=images,
-        filters=OUT_LAY1_SIZE,
-        kernel_size=[5, 5],
-        padding="same",
+    OUT_LAY1_SIZE = 128
+    STRIDE_LEN = 4
+    gather_fn = make_gather_conv(GATHER_SIZE,INPUT_CHANNELS)
+    gather_fn_const = tf.constant(gather_fn)
+
+    gathered_data = tf.nn.conv2d(images,
+        filter=gather_fn_const,
+        strides=(1,STRIDE_LEN,STRIDE_LEN,1),
+        padding="VALID",
+        )
+
+    out2 = tf.layers.dense(gathered_data,
+        units=OUT_LAY1_SIZE,
         activation=tf.nn.relu)
-    mask_lay2_outs = tf.layers.conv2d(
-        inputs=mask_lay1_outs,
-        filters=OUT_LAY1_SIZE,
-        kernel_size=[3, 3],
-        padding="same",
+
+    out3 = tf.layers.dense(out2,
+        units=OUT_LAY1_SIZE,
         activation=tf.nn.relu)
-    mask_lay3_outs = tf.layers.conv2d(
-        inputs=mask_lay2_outs,
-        filters=OUT_LAY1_SIZE,
-        kernel_size=[1, 1],
-        padding="same",
-        activation=tf.nn.relu)
-    mask_lay2_outs = tf.layers.conv2d(
-        inputs=mask_lay3_outs,
-        filters=OUT_COMPARE_SIZE,
-        kernel_size=[1, 1],
-        padding="same",
-        activation=tf.nn.relu)
+
+    out_cmp_vecs = tf.layers.dense(out2,
+        units=OUT_COMPARE_SIZE,
+        activation=None)
+
+    return out_cmp_vecs
+
+def get_loss(offset_cmps, img_cmps):
+    offset_cmps = tf.reshape(offset_cmps,(2*BATCH_SIZE,1,OUT_COMPARE_SIZE))
+    match_offset_vecs = offset_cmps[:BATCH_SIZE]
+    mismatch_offset_vecs = offset_cmps[BATCH_SIZE:]
+
+    img_shape = img_cmps.get_shape().as_list()
+    vecs_per_img = img_shape[1] * img_shape[2]
+    print(vecs_per_img)
+    img_cmps = tf.reshape(img_cmps,(BATCH_SIZE,vecs_per_img,OUT_COMPARE_SIZE))
+
+    match_guesses = tf.reduce_mean(match_offset_vecs * img_cmps,axis=2)
+    mismatch_guesses = tf.reduce_mean(mismatch_offset_vecs * img_cmps,axis=2)
+    all_guesses = tf.concat([match_guesses,mismatch_guesses],axis=0)
+
+    result_val = tf.concat([tf.ones((BATCH_SIZE,vecs_per_img),dtype=tf.float32),
+                            tf.zeros((BATCH_SIZE,vecs_per_img),dtype=tf.float32)],axis=0)
+
+    all_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_val,logits=all_guesses)
+
+    return tf.reduce_mean(all_losses)
 
 
 def train_offset_pairs():
     filtered_imgs = filter_images(get_images())
 
-    in_imgs = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, INPUT_CHANNELS))
+    in_imgs = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, INPUT_CHANNELS))
     in_offsets = tf.placeholder(tf.float32, (2*BATCH_SIZE, 2))
 
     offset_cmps = offset_cmp_vec(in_offsets)
-    img_cmps =
+    img_cmps = image_cmps(in_imgs)
+
+    loss = get_loss(offset_cmps, img_cmps)
+
+    info_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
+
+    opt = info_optimizer.minimize(loss)
 
     with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        for _ in range(1000):
+            loss_tot = 0
+            for _ in range(100):
+                imgs, match_offsets = generate_offset_image_pairs_batch(filtered_imgs)
+                mismatch_offsets = get_offsets()
+                all_offsets = np.concatenate([match_offsets,mismatch_offsets],axis=0)
+                opt_val, loss_val = sess.run([opt,loss],feed_dict={
+                    in_imgs:imgs,
+                    in_offsets:all_offsets,
+                })
+                loss_tot += loss_val
+            print(loss_tot/100)
+            sys.stdout.flush()
 
-
-
-print(generate_offset_image_pairs_batch(filtered_imgs)[0].shape)
+train_offset_pairs()
+#print(generate_offset_image_pairs_batch(filtered_imgs)[0].shape)
 #get_offsets()
