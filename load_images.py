@@ -147,16 +147,16 @@ def mask_info(in_img, dropout_mask):
         padding="same",
         activation=tf.nn.relu)
 
-    fin_outs = tf.layers.conv2d(
+    fin_outs_logit = 0.1*tf.layers.conv2d(
         inputs=gen_lay4_outs,
         filters=IMAGE_CHANNELS,
         kernel_size=[1, 1],
         padding="same",
         activation=None)
-    fin_outs = tf.sigmoid(0.01*fin_outs)
+    fin_outs = tf.sigmoid(fin_outs_logit)
 
-    fin_out_lossess = sqr(in_img-fin_outs)
-    #fin_out_lossess = tf.nn.sigmoid_cross_entropy_with_logits(labels=in_img,logits=fin_outs)
+    sqr_info_loss = tf.reduce_mean(sqr(in_img-fin_outs))
+    fin_out_lossess = tf.nn.sigmoid_cross_entropy_with_logits(labels=in_img,logits=fin_outs_logit)
     flat_losses = tf.reshape(fin_out_lossess,(BATCH_SIZE, IMAGE_WIDTH*IMAGE_WIDTH*IMAGE_CHANNELS))
     batch_losses = tf.reduce_mean(flat_losses,axis=0)
 
@@ -210,9 +210,9 @@ def mask_info(in_img, dropout_mask):
         padding="same",
         activation=None)
 
-    mask_outs = tf.sigmoid(0.01*mask_lay5_outs)
+    mask_outs = 0.1*mask_lay5_outs
 
-    return fin_outs, batch_losses, mask_outs
+    return fin_outs, batch_losses, mask_outs, sqr_info_loss
 
 def init_mask():
     return np.zeros((BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS),dtype=np.float32)
@@ -339,11 +339,11 @@ def learn_fn():
     info_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
     #mask_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
 
-    reconstruction, info_losses, generated_mask_expectations = mask_info(in_img, dropout_mask)
+    reconstruction, info_losses, generated_mask_expectations, sqr_info_loss = mask_info(in_img, dropout_mask)
     tot_info_loss = tf.reduce_mean(info_losses)
 
-    mask_losses = sqr(generated_mask_expectations-mask_actual_max)
-    #mask_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=mask_actual_max,logits=generated_mask_expectations)
+    mask_expectation_output = tf.sigmoid(generated_mask_expectations)
+    mask_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=mask_actual_max,logits=generated_mask_expectations)
     mask_losses = mask_losses * mask_actual_selection
     mask_loss = tf.reduce_sum(mask_losses) / (BATCH_SIZE*SELECTION_SIZE)
 
@@ -370,7 +370,7 @@ def learn_fn():
                 all_masks = [current_masks]
                 # generate data
                 for iter in range(150):
-                    mask_expectations = sess.run(generated_mask_expectations,feed_dict={
+                    mask_expectations = sess.run(mask_expectation_output,feed_dict={
                         in_img: data_sample,
                         dropout_mask: current_masks,
                     })
@@ -390,16 +390,18 @@ def learn_fn():
                 all_data = np.tile(data_sample,(len(all_masks),1,1,1))
                 #train information optimizer
                 tot_inf_loss = 0.0
+                tot_inf_sqr_loss = 0.0
                 inf_iters = 0
                 tot_mask_loss = 0.0
                 for x in range(INFO_BUFFER_SIZE):
                     for li in range(3):
                         sample_idx = np.random.randint(0,len(np_all_masks),size=BATCH_SIZE)
-                        loss_val,opt_val = sess.run([tot_info_loss,info_optim],feed_dict={
+                        loss_val,sqr_loss,opt_val = sess.run([tot_info_loss,sqr_info_loss,info_optim],feed_dict={
                             in_img: all_data[sample_idx],
                             dropout_mask: np_all_masks[sample_idx],
                         })
                         tot_inf_loss += loss_val
+                        tot_inf_sqr_loss += sqr_loss
                         inf_iters += 1
 
                 for x in range(INFO_BUFFER_SIZE):
@@ -407,7 +409,7 @@ def learn_fn():
 
                     current_data = all_data[sample_idx]
                     current_mask = np_all_masks[sample_idx]
-                    mask_expectations = sess.run(generated_mask_expectations,feed_dict={
+                    mask_expectations = sess.run(mask_expectation_output,feed_dict={
                         in_img: current_data,
                         dropout_mask: current_mask,
                     })
@@ -434,6 +436,7 @@ def learn_fn():
                     tot_mask_loss += loss_val
 
                 print("info loss: {}".format(tot_inf_loss/inf_iters))
+                print("info sqr loss: {}".format(tot_inf_sqr_loss/inf_iters))
                 print("mask loss: {}".format(tot_mask_loss/INFO_BUFFER_SIZE))
 
 
