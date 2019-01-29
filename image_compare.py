@@ -89,15 +89,22 @@ def generate_offset_image_pairs_batch(filtered_images):
     return np.stack(batch_cropped_images), batch_offsets
 
 def offset_cmp_vec(offsets):
-    OFFSET_LAY1_size = 32
-    OFFSET_LAY2_size = 64
-    out1 = tf.layers.dense(offsets,
+    OFFSET_LAY1_size = 64
+    #OFFSET_LAY2_size = 64
+    one_hot_offsets = tf.one_hot(
+        indices=offsets,
+        depth=MAX_OFFSET,
+        axis=-1,
+        dtype=tf.float32
+    )
+    input_mat = tf.reshape(one_hot_offsets,(BATCH_SIZE*2,MAX_OFFSET*2))
+    out1 = tf.layers.dense(input_mat,
                 units=OFFSET_LAY1_size,
                 activation=tf.nn.relu)
-    out2 = tf.layers.dense(out1,
-                units=OFFSET_LAY2_size,
-                activation=tf.nn.relu)
-    out3 = tf.layers.dense(out2,
+    #out2 = tf.layers.dense(out1,
+    #            units=OFFSET_LAY2_size,
+    #            activation=tf.nn.relu)
+    out3 = tf.layers.dense(out1,
                 units=OUT_COMPARE_SIZE,
                 activation=None)
     return out3
@@ -154,7 +161,7 @@ def train_offset_pairs():
     filtered_imgs = filter_images(get_images())
 
     in_imgs = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE, INPUT_CHANNELS))
-    in_offsets = tf.placeholder(tf.float32, (2*BATCH_SIZE, 2))
+    in_offsets = tf.placeholder(tf.int32, (2*BATCH_SIZE, 2))
 
     offset_cmps = offset_cmp_vec(in_offsets)
     img_cmps = image_cmps(in_imgs)
