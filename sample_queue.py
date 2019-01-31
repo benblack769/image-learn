@@ -26,10 +26,16 @@ class SampleStorage:
         else:
             self.data.append(element)
 
+    def put_list(self,list):
+        for x in list:
+            self.put(x)
+
 def sample_storeage_test():
     ss = SampleStorage(100)
     for x in range(1000):
         #print(ss.data)
         ss.put(x)
         print(ss.sample())
-sample_storeage_test()
+
+if __name__ == "__main__":
+    sample_storeage_test()

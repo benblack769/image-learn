@@ -1,6 +1,7 @@
 #package specific ignores
 example_images
 gen
+old_generated
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

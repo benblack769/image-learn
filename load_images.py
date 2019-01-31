@@ -5,9 +5,12 @@ from functools import reduce
 import sys
 import os
 import shutil
+import random
 from PIL import Image
 mnist = tf.keras.datasets.mnist
-from sklearn import svm    			# To fit the svm classifier\
+from sklearn import svm    			# To fit the svm classifier
+from loss_ballancing import TensorLossBallancer
+from sample_queue import SampleStorage
 
 BATCH_SIZE = 32
 
@@ -16,7 +19,11 @@ IMAGE_WIDTH = 28
 
 PROB_OF_MASK_ONE = 0.01
 
-DROPOUT_CHANNELS = 9
+SAMPLE_MAX = 5000
+
+DROPOUT_CHANNELS = 1
+
+CALC_ITERS = 8
 
 IMAGE_CHANNELS = 1
 CONV_STRATEGY = "SAME" # "VALID" or "SAME"
@@ -54,6 +61,7 @@ def unpool(arr4d,pool_size):
     tiled = tf.tile(reshaped,(1,1,pool_size,1,pool_size,1))
     return tf.reshape(tiled,newshape)
 
+
 def test_unpool():
     arr = np.arange(3*4*4*2).reshape((3,4,4,2))
     test_val = tf.constant(arr,shape=(3,4,4,2))
@@ -61,158 +69,282 @@ def test_unpool():
     with tf.Session() as sess:
         print(sess.run(res)[0])
 
+
+def unpool2x2(input,orig_shape):
+    base_shape = input.get_shape().as_list()
+    batch_size = tf.shape(input)[0]
+    reshaped_pool = tf.reshape(input,[batch_size,base_shape[1],base_shape[2],1,base_shape[3]])
+    x_concatted = tf.concat([reshaped_pool,reshaped_pool],3)
+    x_reshaped = tf.reshape(x_concatted,[batch_size,base_shape[1],1,base_shape[2]*2,base_shape[3]])
+    y_concatted = tf.concat([x_reshaped,x_reshaped],2)
+    y_reshaped = tf.reshape(y_concatted,[batch_size,base_shape[1]*2,base_shape[2]*2,base_shape[3]])
+    #sliced = y_reshaped[:,:orig_shape[1],:orig_shape[2]]
+    sliced = tf.slice(y_reshaped,[0,0,0,0],[batch_size,orig_shape[1],orig_shape[2],base_shape[3]])
+    return sliced
 #test_unpool()
 #exit(1)
 
-def mask_info(in_img, dropout_mask):
-    CONV1_SIZE = 5
-    LAY1_SIZE = 64
+def reconstruction_loss(model_reconstruction, input_img):
+    pix_wise_losses = sqr(model_reconstruction - input_img)
+    flat_loss = tf.reshape(pix_wise_losses,(BATCH_SIZE, IMAGE_WIDTH * IMAGE_WIDTH))
+    return tf.reduce_mean(flat_loss,axis=1)
 
-    lay1_outs = tf.layers.conv2d(
-        inputs=in_img,
-        filters=LAY1_SIZE,
-        kernel_size=[CONV1_SIZE, CONV1_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
+def mask_loss(actual_win,actual_mask_sel,mask_sel_probs):
+    calced_win_prob = tf.reduce_sum(actual_mask_sel * mask_sel_probs,axis=[1,2])
+    return tf.nn.sigmoid_cross_entropy_with_logits(logits=calced_win_prob,labels=actual_win)
 
-    CONV2_SIZE = 3
-    lay2_outs = tf.layers.conv2d(
-        inputs=lay1_outs,
-        filters=LAY1_SIZE,
-        kernel_size=[CONV2_SIZE, CONV2_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
 
-    DROPLAY_CONV_SIZE = 3
-    DROPLAY_CHANNEL_SIZE = 8
-    droplay_outs = tf.layers.conv2d(
-        inputs=lay2_outs,
-        filters=DROPLAY_CHANNEL_SIZE*DROPOUT_CHANNELS,
-        kernel_size=[DROPLAY_CONV_SIZE, DROPLAY_CONV_SIZE],
-        padding="same",
-        activation=None)
-    droplay_outs = tf.reshape(droplay_outs,(BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS, DROPLAY_CHANNEL_SIZE))
-    broadcastable_dmask = tf.reshape(dropout_mask,(BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS, 1))
-    droplay_outs = droplay_outs * broadcastable_dmask
-    droplay_outs = tf.reshape(droplay_outs,(BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS* DROPLAY_CHANNEL_SIZE))
-    tot_droplay_outs = tf.concat([droplay_outs,dropout_mask],axis=3)
-
-    POOLED_LAYER_SIZE = 64
-    DROPLAY_POOL_SIZE = 2
-    pooled_outs = tf.layers.average_pooling2d(
-        inputs=tot_droplay_outs,
-        pool_size=[DROPLAY_POOL_SIZE,DROPLAY_POOL_SIZE],
-        strides=DROPLAY_POOL_SIZE,
+def lay_pool_skip_method(input):
+    lay1size = 64
+    CONV1_SIZE=[3,3]
+    POOL_SIZE=[2,2]
+    POOL_STRIDES=[2,2]
+    DEPTH=3
+    basic_outs = []
+    orig_reduction = tf.layers.dense(
+        inputs=input,
+        units=lay1size,
+        activation=tf.nn.relu
     )
+    cur_out = orig_reduction
+    for x in range(DEPTH):
+        lay1_outs = tf.layers.conv2d(
+            inputs=cur_out,
+            filters=lay1size,
+            kernel_size=CONV1_SIZE,
+            padding="same",
+            activation=tf.nn.relu)
+        lay_1_pool = tf.layers.average_pooling2d(
+            inputs=lay1_outs,
+            pool_size=POOL_SIZE,
+            strides=POOL_STRIDES,
+            padding='same',
+        )
+        basic_outs.append(lay1_outs)
+        cur_out = lay_1_pool
+        print(lay_1_pool.shape)
 
-    GEN_CONV1_SIZE = 3
-    gen_lay1_outs = tf.layers.conv2d(
-        inputs=pooled_outs,
-        filters=POOLED_LAYER_SIZE,
-        kernel_size=[GEN_CONV1_SIZE, GEN_CONV1_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
+    old_val = basic_outs[DEPTH-1]
+    for y in range(DEPTH-2,-1,-1):
+        skip_val = basic_outs[y]
+        depooled = unpool2x2(old_val,skip_val.get_shape().as_list())
+        base_val = depooled + skip_val
 
-    GEN_CONV2_SIZE = 3
-    gen_lay2_outs = tf.layers.conv2d(
-        inputs=gen_lay1_outs,
-        filters=POOLED_LAYER_SIZE,
-        kernel_size=[GEN_CONV2_SIZE, GEN_CONV2_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
+        base_val = tf.layers.conv2d(
+            inputs=base_val,
+            filters=lay1size,
+            kernel_size=CONV1_SIZE,
+            padding="same",
+            activation=tf.nn.relu)
+        old_val = base_val
+        print(depooled.shape,)
 
-    unpooled_genlay2 = unpool(gen_lay2_outs,DROPLAY_POOL_SIZE)
 
-    skip_out_lay = tf.layers.conv2d(
-        inputs=tot_droplay_outs,
-        filters=LAY1_SIZE,
-        kernel_size=[1, 1],
-        padding="same",
-        activation=tf.nn.relu)
-
-    tot_unpooled = skip_out_lay + 0.1*unpooled_genlay2
-    GEN_CONV3_SIZE = 3
-    gen_lay3_outs = tf.layers.conv2d(
-        inputs=tot_unpooled,
-        filters=LAY1_SIZE,
-        kernel_size=[GEN_CONV3_SIZE, GEN_CONV3_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
-
-    GEN_CONV4_SIZE = 3
-    gen_lay4_outs = tf.layers.conv2d(
-        inputs=gen_lay3_outs,
-        filters=LAY1_SIZE,
-        kernel_size=[GEN_CONV4_SIZE, GEN_CONV4_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
-
-    fin_outs = tf.layers.conv2d(
-        inputs=gen_lay4_outs,
-        filters=IMAGE_CHANNELS,
-        kernel_size=[1, 1],
-        padding="same",
-        activation=None)
-    fin_outs = tf.sigmoid(0.01*fin_outs)
-
-    fin_out_lossess = sqr(in_img-fin_outs)
-    #fin_out_lossess = tf.nn.sigmoid_cross_entropy_with_logits(labels=in_img,logits=fin_outs)
-    flat_losses = tf.reshape(fin_out_lossess,(BATCH_SIZE, IMAGE_WIDTH*IMAGE_WIDTH*IMAGE_CHANNELS))
-    batch_losses = tf.reduce_mean(flat_losses,axis=0)
-
-    INFO_LAYER_SIZE = 16
-    DROPLAY_POOL_SIZE = 2
-    mask_drop_outs = tf.stop_gradient(tot_droplay_outs)
-    pooled_outs = tf.layers.average_pooling2d(
-        inputs=mask_drop_outs,
-        pool_size=[DROPLAY_POOL_SIZE,DROPLAY_POOL_SIZE],
-        strides=DROPLAY_POOL_SIZE,
+    combined_input = old_val+orig_reduction
+    refine_layer1 = tf.layers.dense(
+        inputs=combined_input,
+        units=lay1size,
+        activation=tf.nn.relu
     )
+    generate_out = tf.layers.dense(
+        inputs=refine_layer1,
+        units=1
+    )
+    refine_mask1 = tf.layers.dense(
+        inputs=combined_input,
+        units=lay1size,
+        activation=tf.nn.relu
+    )
+    mask_out = tf.layers.dense(
+        inputs=refine_layer1,
+        units=1
+    )
+    return (generate_out), (mask_out)
 
-    MASK_CONV1_SIZE = 3
-    mask_lay1_outs = tf.layers.conv2d(
-        inputs=pooled_outs,
-        filters=INFO_LAYER_SIZE,
-        kernel_size=[MASK_CONV1_SIZE, MASK_CONV1_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
+def train_generator():
+    train_data = np.copy(x_train)
+    for iteration_run in range(1000000000):
+        np.random.shuffle(train_data)
+        for x in range(0,len(train_data),BATCH_SIZE):
+            yield np.reshape(train_data[x:x+BATCH_SIZE],(BATCH_SIZE,IMAGE_WIDTH,IMAGE_WIDTH,1))
 
-    unpooled_masklay2 = unpool(mask_lay1_outs,DROPLAY_POOL_SIZE)
+def sample_prob(mask_p):
+    # pick better masks with higher probabilty by squaring
+    prob = mask_p# * mask_p
+    #print(prob)
+    prob = prob / (np.sum(prob))
+    return prob
 
-    skip_out_lay = tf.layers.conv2d(
-        inputs=mask_drop_outs,
-        filters=INFO_LAYER_SIZE,
-        kernel_size=[1, 1],
-        padding="same",
-        activation=tf.nn.relu)
+def mask_sample(mask_probs_batch):
+    new_masks = []
+    for b in range(BATCH_SIZE):
+        mask_p = mask_probs_batch[b]
+        flat_mask_p = mask_p.reshape((IMAGE_WIDTH*IMAGE_WIDTH,))
+        normalized_flat_mask = sample_prob(flat_mask_p)
+        mask_val = np.random.choice(np.arange(IMAGE_WIDTH*IMAGE_WIDTH),p=normalized_flat_mask)
+        new_flat_mask = np.zeros((IMAGE_WIDTH*IMAGE_WIDTH,))
+        new_flat_mask[mask_val] = 1.0
+        new_mask = np.reshape(new_flat_mask,(IMAGE_WIDTH,IMAGE_WIDTH,1))
+        new_masks.append(new_mask)
+    return np.stack(new_masks)
 
-    tot_unpooled = skip_out_lay + unpooled_masklay2
-    MASK_CONV3_SIZE = 3
-    mask_lay3_outs = tf.layers.conv2d(
-        inputs=tot_unpooled,
-        filters=INFO_LAYER_SIZE,
-        kernel_size=[MASK_CONV3_SIZE, MASK_CONV3_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
+def get_input(img,mask):
+    return tf.concat([img*mask,mask],axis=-1)
 
-    MASK_CONV4_SIZE = 3
-    mask_lay4_outs = tf.layers.conv2d(
-        inputs=mask_lay3_outs,
-        filters=INFO_LAYER_SIZE,
-        kernel_size=[MASK_CONV4_SIZE, MASK_CONV4_SIZE],
-        padding="same",
-        activation=tf.nn.relu)
+class AI_Agent:
+    def __init__(self):
+        self.in_img = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
+        self.dropout_mask = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS))
 
-    mask_lay5_outs = tf.layers.conv2d(
-        inputs=mask_lay4_outs,
-        filters=DROPOUT_CHANNELS,
-        kernel_size=[1, 1],
-        padding="same",
-        activation=None)
+        self.is_actual_winner = tf.placeholder(tf.float32, (BATCH_SIZE//2, )) # one for max selection 0 for everything else
+        self.mask_actual_selection = tf.placeholder(tf.float32, (BATCH_SIZE//2, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS)) # one for selected vars, 0 for everything else
 
-    mask_outs = tf.sigmoid(0.01*mask_lay5_outs)
+        self.is_actual_winner = tf.concat([self.is_actual_winner,tf.zeros_like(self.is_actual_winner)],axis=0)
+        self.mask_actual_selection = tf.concat([self.mask_actual_selection,tf.zeros_like(self.mask_actual_selection)],axis=0)
+        self.is_actual_winner = tf.reshape(self.is_actual_winner, (BATCH_SIZE, 1))
 
-    return fin_outs, batch_losses, mask_outs
+        mask_loss_mask = tf.concat([tf.ones(BATCH_SIZE//2),tf.zeros(BATCH_SIZE//2)],axis=0)
+        gen_loss_mask = tf.concat([tf.zeros(BATCH_SIZE//2),tf.ones(BATCH_SIZE//2)],axis=0)
+
+        #feed_input = tf.concat([in_img*mask,(mask)],axis=3)
+        #AdamOptimizer
+        #RMSPropOptimizer
+        info_optimizer = tf.train.RMSPropOptimizer(learning_rate=ADAM_learning_rate)
+        #mask_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
+
+        model_input = get_input(self.in_img, self.dropout_mask)
+        self.reconstruction, mask_expectation_logits = lay_pool_skip_method(model_input)
+        self.reconstruct_loss_batchwise = reconstruction_loss(self.reconstruction,self.in_img)
+        self.tot_reconstr_loss = tf.reduce_mean(self.reconstruct_loss_batchwise*gen_loss_mask)
+
+        mask_losses = mask_loss(self.is_actual_winner,self.mask_actual_selection,mask_expectation_logits)
+        self.mask_loss = tf.reduce_mean(mask_losses*mask_loss_mask)
+        self.generated_mask_expectations = tf.nn.sigmoid(mask_expectation_logits)
+
+        self.loss_ballancer = TensorLossBallancer(0.95,0.99)
+        adj_mask_loss, adj_reconstr_loss, self.stateful_adj = self.loss_ballancer.adjust(self.mask_loss,self.tot_reconstr_loss)
+        combined_ballanced_loss = adj_mask_loss+adj_reconstr_loss
+        self.optim = info_optimizer.minimize(combined_ballanced_loss)
+        self.gen_train_sampler = SampleStorage(SAMPLE_MAX)
+        self.mask_train_sampler = SampleStorage(SAMPLE_MAX)
+
+    def calc_games_batch(self,sess,input_img_batch):
+        dropout_mask = np.zeros((BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS))
+
+        all_masks = []
+        all_mask_actuals = []
+        all_mask_additions = []
+        for i in range(CALC_ITERS):
+            mask_probs = sess.run(self.generated_mask_expectations,feed_dict={
+                self.in_img: input_img_batch,
+                self.dropout_mask: dropout_mask,
+            })
+            single_mask_sample = mask_sample(mask_probs)
+            all_masks.append(dropout_mask)
+            dropout_mask = np.logical_or(dropout_mask,single_mask_sample)
+            all_mask_additions.append(single_mask_sample)
+
+        reconstruct_loss = sess.run(self.reconstruct_loss_batchwise,feed_dict={
+            self.in_img:input_img_batch,
+            self.dropout_mask:dropout_mask,
+        })
+        return reconstruct_loss,dropout_mask,all_masks,all_mask_additions
+
+    def add_gen_train(self,input,mask):
+        self.gen_train_sampler.put_list(zip(input,mask))
+
+    def add_mask_train(self,input,prev_mask,mask_sel,does_win):
+        self.mask_train_sampler.put_list(zip(input,prev_mask,mask_sel,does_win))
+
+    def sample_mask(self):
+        data = [self.mask_train_sampler.sample() for _ in range(BATCH_SIZE//2)]
+        inputs = [d[0] for d in data]
+        input_mask = [d[1] for d in data]
+        mask_selection = [d[2] for d in data]
+        does_win = [d[3] for d in data]
+        return np.stack(inputs),np.stack(input_mask),np.stack(mask_selection),np.stack(does_win)
+
+    def sample_gen(self):
+        data = [self.gen_train_sampler.sample() for _ in range(BATCH_SIZE//2)]
+        inputs = [d[0] for d in data]
+        mask = [d[1] for d in data]
+        return np.stack(inputs),np.stack(mask)
+
+    def train_from_stored(self,sess):
+        m_inp,m_mask,m_mask_sel,m_does_win = self.sample_mask()
+        g_inp,g_mask = self.sample_gen()
+
+        input = np.concatenate([m_inp,g_inp],axis=0)
+        mask = np.concatenate([m_mask,g_mask],axis=0)
+
+        # we don't have compares for the other part of the batch, so just add zerso to fill in the tensors
+        act_does_win = np.concatenate([m_does_win,np.zeros_like(m_does_win)],axis=0)
+        act_does_win = np.reshape(act_does_win,(BATCH_SIZE,1))
+        mask_sel = np.concatenate([m_mask_sel,np.zeros_like(m_mask_sel)],axis=0)
+
+        mask_loss,reconst_loss,opt,stateful_adj = sess.run([self.mask_loss,self.tot_reconstr_loss,self.optim,self.stateful_adj],feed_dict={
+            self.in_img: input,
+            self.dropout_mask: mask,
+            self.is_actual_winner: act_does_win,
+            self.mask_actual_selection: mask_sel,
+        })
+        return mask_loss,reconst_loss
+        #print("{}\t{}".format(mask_loss,reconst_loss))
+
+
+def eval_winners(losses1,losses2):
+    win_val = np.asarray([(1 if l1 > l2 else 0) for l1,l2 in zip(losses1,losses2)],dtype=np.float32)
+    return win_val,1.0-win_val
+
+def add_train_all(ai,input,fin_mask,does_win,in_masks,mask_adds):
+    ai.add_gen_train(input,fin_mask)
+    for in_mask,mask_add in zip(in_masks,mask_adds):
+        ai.add_mask_train(input,in_mask,mask_add,does_win)
+
+def calc_pair_add_train(sess,ai1,ai2,input):
+    reconstr_loss1,final_mask1,all_masks1,all_masks_adds1 = ai1.calc_games_batch(sess,input)
+    reconstr_loss2,final_mask2,all_masks2,all_masks_adds2 = ai2.calc_games_batch(sess,input)
+
+    winner1,winner2 = eval_winners(reconstr_loss1,reconstr_loss2)
+
+    add_train_all(ai1,input,final_mask1,winner1,all_masks1,all_masks_adds1)
+    add_train_all(ai2,input,final_mask2,winner2,all_masks2,all_masks_adds2)
+
+
+def train_all_ais():
+    batch_generator = train_generator()
+
+    NUM_AIS = 5
+    NUM_ITERS = 10
+    all_ais = [AI_Agent() for _ in range(NUM_AIS)]
+
+
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        # initial population
+        for x in range(100):
+            ai1 = random.choice(all_ais)
+            ai2 = random.choice(all_ais)
+
+            calc_pair_add_train(sess,ai1,ai2,next(batch_generator))
+
+        for x in range(1000000000):
+            for y in range(NUM_AIS*NUM_ITERS):
+                ai1 = random.choice(all_ais)
+                ai2 = random.choice(all_ais)
+
+                calc_pair_add_train(sess,ai1,ai2,next(batch_generator))
+
+            for ai in all_ais:
+                tot_mask_loss, tot_reconst_los = 0,0
+                for y in range(NUM_ITERS):
+                    mask_loss,reconst_loss = ai.train_from_stored(sess)
+                    tot_mask_loss += mask_loss
+                    tot_reconst_los += reconst_loss
+
+                print("{}\t{}".format(tot_mask_loss/NUM_ITERS,tot_reconst_los/NUM_ITERS))
+
+
 
 def init_mask():
     return np.zeros((BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS),dtype=np.float32)
@@ -227,214 +359,5 @@ def sample_probs(size,probs):
     return res
     #return np.random.choice(size,p=probs)
 
-def get_sampled_indexes(mask_expectations,samples_per_item):
-    all_samples = []
-    mask_size = IMAGE_WIDTH*IMAGE_WIDTH*DROPOUT_CHANNELS
-    for i in range(BATCH_SIZE):
-        probabilities = norm_probs(UNIFORM_SAMPLE_PROB + mask_expectations[i].reshape(mask_size))
-        next_choice = sample_probs(samples_per_item,probabilities)
-        next_choice = np.minimum(next_choice,mask_size-1)
-        all_samples.append(next_choice)
-    return np.asarray(all_samples)
 
-def set_sampled_indexes(old_mask,indexes):
-    old_mask = np.copy(old_mask)
-    all_samples = []
-    mask_size = IMAGE_WIDTH*IMAGE_WIDTH*DROPOUT_CHANNELS
-    for i in range(BATCH_SIZE):
-        new_mask = old_mask[i].reshape((mask_size,))
-        next_choice = indexes[i]
-        new_mask[next_choice] = 1
-        new_mask = new_mask.reshape((IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS))
-        all_samples.append(new_mask)
-    return np.stack(all_samples)
-
-def calc_selection_masks(sampled_indicies, indici_losses):
-    all_samp_masks = []
-    all_max_masks = []
-    mask_size = IMAGE_WIDTH*IMAGE_WIDTH*DROPOUT_CHANNELS
-    for i in range(BATCH_SIZE):
-        indicies = sampled_indicies[i]
-        losses = indici_losses[i]
-        samp_mask = np.zeros(mask_size)
-        samp_mask[indicies] = 1
-
-        max_loss_arg = np.argmax(losses)
-        max_index = indicies[max_loss_arg]
-        max_mask = np.zeros(mask_size)
-        max_mask[max_index] = 1
-
-        all_samp_masks.append(samp_mask)
-        all_max_masks.append(max_mask)
-    all_max_masks = np.stack(all_max_masks).reshape((BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS))
-    all_samp_masks = np.stack(all_samp_masks).reshape((BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS))
-    return all_max_masks, all_samp_masks
-
-def save_image(float_data,filename):
-    img_data = (float_data * 255.0).astype(np.uint8)
-    img = Image.fromarray(img_data,mode="L")
-    img.save(filename)
-
-def html_to_int(code):
-    return int("0x"+code[1::],16)*256+255
-
-def save_mask(mask,fname):
-    colors = [
-        "#2E2EFE",
-        "#00FF00",
-        "#FF0040",
-        "#610B0B",
-        "#FF0040",
-        "#00FFFF",
-        "#FFFF00",
-        "#848484",
-        "#000000",
-    ]
-    color_ints = [html_to_int(col) for col in colors]
-    resarray = np.zeros((IMAGE_WIDTH,IMAGE_WIDTH),dtype=np.int32)
-    for x in range(IMAGE_WIDTH):
-        for y in range(IMAGE_WIDTH):
-            sum = 0
-            iters = 0
-            for z in range(DROPOUT_CHANNELS):
-                if mask[x][y][z] != 0:
-                    sum += color_ints[z]
-                    iters += 1
-            resarray[x][y] += sum // iters if iters != 0 else 0xffffffff
-
-    casted_image = np.frombuffer(resarray.tobytes(), dtype=np.uint8).reshape((IMAGE_WIDTH,IMAGE_WIDTH,4))
-    Image.fromarray(casted_image,mode="RGBA").save(fname)
-
-
-
-def save_generated_image(orig_img,generated_image,generated_mask,revealed_capsules,weight_updates):
-    folder = "generated/{}/".format(str(weight_updates))
-    NUM_IMAGES_SAVE = 5
-    if not os.path.exists(folder):
-        for i in range(NUM_IMAGES_SAVE):
-            subfold = folder+str(i)+"/"
-            fname = subfold+"orig.png"
-            os.makedirs(subfold)
-            save_image(orig_img[i].reshape((IMAGE_WIDTH,IMAGE_WIDTH)),fname)
-    for i in range(NUM_IMAGES_SAVE):
-        fname = "{}{}/{}.png".format(folder,i,revealed_capsules)
-        maskfname = "{}{}/{}m.png".format(folder,i,revealed_capsules)
-        save_image(generated_image[i].reshape((IMAGE_WIDTH,IMAGE_WIDTH)),fname)
-        save_mask(generated_mask[i],maskfname)
-
-def is_power2(num):
-	'states if a number is a power of two'
-	return num != 0 and ((num & (num - 1)) == 0)
-
-def learn_fn():
-    in_img = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
-    dropout_mask = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS))
-
-    mask_actual_max = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS)) # one for max selection 0 for everything else
-    mask_actual_selection = tf.placeholder(tf.float32, (BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, DROPOUT_CHANNELS)) # one for selected vars, 0 for everything else
-
-    #feed_input = tf.concat([in_img*mask,(mask)],axis=3)
-    #AdamOptimizer
-    #RMSPropOptimizer
-    info_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
-    #mask_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
-
-    reconstruction, info_losses, generated_mask_expectations = mask_info(in_img, dropout_mask)
-    tot_info_loss = tf.reduce_mean(info_losses)
-
-    mask_losses = sqr(generated_mask_expectations-mask_actual_max)
-    #mask_losses = tf.nn.sigmoid_cross_entropy_with_logits(labels=mask_actual_max,logits=generated_mask_expectations)
-    mask_losses = mask_losses * mask_actual_selection
-    mask_loss = tf.reduce_sum(mask_losses) / (BATCH_SIZE*SELECTION_SIZE)
-
-    info_optim = info_optimizer.minimize(tot_info_loss)
-    mask_optim = info_optimizer.minimize(mask_loss)
-
-    #next_input = tf.stop_gradient(first_layer_out)
-
-    train_data = np.copy(x_train)
-
-    if os.path.exists("generated"):
-        shutil.rmtree("generated")
-
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
-        #loss_val,opt_val = sess.run([loss,optim])
-        update_num = 0
-        for iteration_run in range(100000):
-            np.random.shuffle(train_data)
-            for x in range(0,len(train_data), BATCH_SIZE):
-                update_num += 1
-                data_sample = train_data[x:x+BATCH_SIZE].reshape((BATCH_SIZE, IMAGE_WIDTH, IMAGE_WIDTH, IMAGE_CHANNELS))
-                current_masks = init_mask()
-                all_masks = [current_masks]
-                # generate data
-                for iter in range(150):
-                    mask_expectations = sess.run(generated_mask_expectations,feed_dict={
-                        in_img: data_sample,
-                        dropout_mask: current_masks,
-                    })
-                    chosen_indexes = get_sampled_indexes(mask_expectations,1).reshape(BATCH_SIZE)
-                    current_masks = set_sampled_indexes(current_masks,chosen_indexes)
-                    all_masks.append(current_masks)
-                    if is_power2(iter):
-                        gen_img = sess.run(reconstruction,feed_dict={
-                            in_img: data_sample,
-                            dropout_mask: current_masks,
-                        })
-                        save_generated_image(data_sample,gen_img,current_masks,iter,update_num)
-
-                print("generation finished")
-
-                np_all_masks = np.concatenate(all_masks,axis=0)
-                all_data = np.tile(data_sample,(len(all_masks),1,1,1))
-                #train information optimizer
-                tot_inf_loss = 0.0
-                inf_iters = 0
-                tot_mask_loss = 0.0
-                for x in range(INFO_BUFFER_SIZE):
-                    for li in range(3):
-                        sample_idx = np.random.randint(0,len(np_all_masks),size=BATCH_SIZE)
-                        loss_val,opt_val = sess.run([tot_info_loss,info_optim],feed_dict={
-                            in_img: all_data[sample_idx],
-                            dropout_mask: np_all_masks[sample_idx],
-                        })
-                        tot_inf_loss += loss_val
-                        inf_iters += 1
-
-                for x in range(INFO_BUFFER_SIZE):
-                    sample_idx = np.random.randint(0,len(np_all_masks),size=BATCH_SIZE)
-
-                    current_data = all_data[sample_idx]
-                    current_mask = np_all_masks[sample_idx]
-                    mask_expectations = sess.run(generated_mask_expectations,feed_dict={
-                        in_img: current_data,
-                        dropout_mask: current_mask,
-                    })
-                    sampled_indicies = get_sampled_indexes(mask_expectations,SELECTION_SIZE)
-                    samp_indicies_t = np.transpose(sampled_indicies)
-                    #print(samp_indicies_t)
-                    all_samp_values = []
-                    for samp in range(SELECTION_SIZE):
-                        samp_values = sess.run(info_losses,feed_dict={
-                            in_img: current_data,
-                            dropout_mask: set_sampled_indexes(current_mask,samp_indicies_t[samp]),
-                        })
-                        all_samp_values.append(samp_values)
-                    svals = np.stack(all_samp_values).transpose()
-
-                    act_max, sel_mask = calc_selection_masks(sampled_indicies,svals)
-                    loss_val,opt_val = sess.run([mask_loss,mask_optim],feed_dict={
-                        in_img: all_data[sample_idx],
-                        dropout_mask: np_all_masks[sample_idx],
-                        mask_actual_max: act_max,
-                        mask_actual_selection: sel_mask,
-                    })
-
-                    tot_mask_loss += loss_val
-
-                print("info loss: {}".format(tot_inf_loss/inf_iters))
-                print("mask loss: {}".format(tot_mask_loss/INFO_BUFFER_SIZE))
-
-
-learn_fn()
+train_all_ais()
