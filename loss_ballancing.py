@@ -18,10 +18,14 @@ class TensorLossBallancer:
         self.MAG_ADJUST_COEF = MAG_ADJUST_COEF
         self.DECAY_RATE = DECAY_RATE
         self.EPSION = ESPILON
+        self.a_adj_state = None
+        self.b_adj_state = None
 
     def adjust(self,a,b):
         a_adj = tf.Variable(tf.ones_like(a),dtype=tf.float32,trainable=False)
         b_adj = tf.Variable(tf.ones_like(b),dtype=tf.float32,trainable=False)
+        self.a_adj_state = a_adj
+        self.b_adj_state = b_adj
         new_a = a * a_adj
         new_b = b * b_adj
         a_adj_a = self.ADAPT_COEF * a_adj + (1-self.ADAPT_COEF) * ((b*b_adj) / (a+self.EPSION))

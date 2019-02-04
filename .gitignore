@@ -2,6 +2,7 @@
 example_images
 gen
 old_generated
+generated
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

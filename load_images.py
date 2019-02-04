@@ -85,7 +85,7 @@ def unpool2x2(input,orig_shape):
 #exit(1)
 
 def reconstruction_loss(model_reconstruction, input_img):
-    pix_wise_losses = sqr(model_reconstruction - input_img)
+    pix_wise_losses = tf.nn.sigmoid_cross_entropy_with_logits(logits=model_reconstruction,labels=input_img)
     flat_loss = tf.reshape(pix_wise_losses,(BATCH_SIZE, IMAGE_WIDTH * IMAGE_WIDTH))
     return tf.reduce_mean(flat_loss,axis=1)
 
@@ -95,11 +95,11 @@ def mask_loss(actual_win,actual_mask_sel,mask_sel_probs):
 
 
 def lay_pool_skip_method(input):
-    lay1size = 64
+    lay1size = 32
     CONV1_SIZE=[3,3]
     POOL_SIZE=[2,2]
     POOL_STRIDES=[2,2]
-    DEPTH=3
+    DEPTH=5
     basic_outs = []
     orig_reduction = tf.layers.dense(
         inputs=input,
@@ -150,7 +150,7 @@ def lay_pool_skip_method(input):
         inputs=refine_layer1,
         units=1
     )
-    refine_mask1 = tf.layers.dense(
+    '''refine_mask1 = tf.layers.dense(
         inputs=combined_input,
         units=lay1size,
         activation=tf.nn.relu
@@ -158,8 +158,8 @@ def lay_pool_skip_method(input):
     mask_out = tf.layers.dense(
         inputs=refine_layer1,
         units=1
-    )
-    return (generate_out), (mask_out)
+    )'''
+    return (generate_out)
 
 def train_generator():
     train_data = np.copy(x_train)
@@ -213,9 +213,11 @@ class AI_Agent:
         #mask_optimizer = tf.train.AdamOptimizer(learning_rate=ADAM_learning_rate)
 
         model_input = get_input(self.in_img, self.dropout_mask)
-        self.reconstruction, mask_expectation_logits = lay_pool_skip_method(model_input)
+        mask_expectation_logits = lay_pool_skip_method(model_input)
+        self.reconstruction = lay_pool_skip_method(model_input)
         self.reconstruct_loss_batchwise = reconstruction_loss(self.reconstruction,self.in_img)
         self.tot_reconstr_loss = tf.reduce_mean(self.reconstruct_loss_batchwise*gen_loss_mask)
+        self.sigmoid_reconstr = tf.sigmoid(self.reconstruction)
 
         mask_losses = mask_loss(self.is_actual_winner,self.mask_actual_selection,mask_expectation_logits)
         self.mask_loss = tf.reduce_mean(mask_losses*mask_loss_mask)
@@ -244,11 +246,11 @@ class AI_Agent:
             dropout_mask = np.logical_or(dropout_mask,single_mask_sample)
             all_mask_additions.append(single_mask_sample)
 
-        reconstruct_loss = sess.run(self.reconstruct_loss_batchwise,feed_dict={
+        reconstr_sig,reconstruct_loss = sess.run([self.sigmoid_reconstr,self.reconstruct_loss_batchwise],feed_dict={
             self.in_img:input_img_batch,
             self.dropout_mask:dropout_mask,
         })
-        return reconstruct_loss,dropout_mask,all_masks,all_mask_additions
+        return reconstruct_loss,reconstr_sig,dropout_mask,all_masks,all_mask_additions
 
     def add_gen_train(self,input,mask):
         self.gen_train_sampler.put_list(zip(input,mask))
@@ -288,6 +290,8 @@ class AI_Agent:
             self.is_actual_winner: act_does_win,
             self.mask_actual_selection: mask_sel,
         })
+        #print(sess.run(self.loss_ballancer.a_adj_state),sess.run(self.loss_ballancer.b_adj_state))
+        #print()
         return mask_loss,reconst_loss
         #print("{}\t{}".format(mask_loss,reconst_loss))
 
@@ -302,34 +306,69 @@ def add_train_all(ai,input,fin_mask,does_win,in_masks,mask_adds):
         ai.add_mask_train(input,in_mask,mask_add,does_win)
 
 def calc_pair_add_train(sess,ai1,ai2,input):
-    reconstr_loss1,final_mask1,all_masks1,all_masks_adds1 = ai1.calc_games_batch(sess,input)
-    reconstr_loss2,final_mask2,all_masks2,all_masks_adds2 = ai2.calc_games_batch(sess,input)
+    reconstr_loss1,_,final_mask1,all_masks1,all_masks_adds1 = ai1.calc_games_batch(sess,input)
+    reconstr_loss2,_,final_mask2,all_masks2,all_masks_adds2 = ai2.calc_games_batch(sess,input)
 
     winner1,winner2 = eval_winners(reconstr_loss1,reconstr_loss2)
 
     add_train_all(ai1,input,final_mask1,winner1,all_masks1,all_masks_adds1)
     add_train_all(ai2,input,final_mask2,winner2,all_masks2,all_masks_adds2)
 
+def save_image(filename,float_data):
+    img_data = (float_data * 255.0).astype(np.uint8)
+    img = Image.fromarray(img_data,mode="L")
+    img.save(filename)
+
+class CSV_gen:
+    def __init__(self, header):
+        self.header = header
+        self.sorted_header = list(sorted(self.header))
+        self.rows = {h:[] for h in header}
+
+    def add_row(self,row_data):
+        assert list(sorted(row_data.keys())) == self.sorted_header
+        for h,d in row_data.items():
+            self.rows[h].append(d)
+
+def calc_pair_save_imgs(sess,ais,input,folder):
+    NUM_INPUT_SAVES = 3
+
+    for x in range(NUM_INPUT_SAVES):
+        foldname = folder+str(x)+"/"
+        os.mkdir(foldname)
+        save_image(foldname+"input.jpg",np.squeeze(input[x]))
+
+    for ai_idx,ai in enumerate(ais):
+        reconstr_loss1,reconstr1,final_mask1,all_masks1,all_masks_adds1 = ai.calc_games_batch(sess,input)
+        for x in range(NUM_INPUT_SAVES):
+            foldname = folder + str(x)+"/"
+            save_image(foldname+"recon{}.jpg".format(ai_idx),np.squeeze(reconstr1[x]))
+            save_image(foldname+"mask{}.jpg".format(ai_idx),np.squeeze(final_mask1[x]))
 
 def train_all_ais():
     batch_generator = train_generator()
 
-    NUM_AIS = 5
+    NUM_AIS = 3
     NUM_ITERS = 10
     all_ais = [AI_Agent() for _ in range(NUM_AIS)]
+    BASEFOLDER = "generated/"
+
+    if os.path.exists(BASEFOLDER):
+        shutil.rmtree(BASEFOLDER)
+    os.mkdir(BASEFOLDER)
 
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         # initial population
-        for x in range(100):
+        for x in range(10):
             ai1 = random.choice(all_ais)
             ai2 = random.choice(all_ais)
 
             calc_pair_add_train(sess,ai1,ai2,next(batch_generator))
 
         for x in range(1000000000):
-            for y in range(NUM_AIS*NUM_ITERS):
+            for y in range(NUM_AIS):
                 ai1 = random.choice(all_ais)
                 ai2 = random.choice(all_ais)
 
@@ -344,6 +383,10 @@ def train_all_ais():
 
                 print("{}\t{}".format(tot_mask_loss/NUM_ITERS,tot_reconst_los/NUM_ITERS))
 
+            if x % 20 == 0:
+                foldname = BASEFOLDER+str(x)+"/"
+                os.mkdir(foldname)
+                calc_pair_save_imgs(sess,all_ais,next(batch_generator),foldname)
 
 
 def init_mask():
