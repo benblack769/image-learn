@@ -1,7 +1,7 @@
 import numpy as np
 import random
 from gym_wrapper import MultiProcessEnvs,Envs
-from loss_ballancing import TensorLossBallancer
+from functools import reduce
 
 NUM_ENVS = 32
 
@@ -104,6 +104,7 @@ def main():
             units=1,
             activation=None,
         )
+        #action_vec = tf.ones((NUM_ENVS,1),dtype=tf.float32)*(-10)
         action_vec = tf.nn.sigmoid(action_vec) * 5
         eval_val = tf.layers.dense(
             inputs=input_vec,
@@ -119,6 +120,7 @@ def main():
     #critic_val_no_grad = advant_model.val(tf.stop_gradient(action_vec),input_vec_critic)
 
     value_loss = value_cost(eval_val,value_comparitor)
+
 
     advantage_value = critic_val #- tf.stop_gradient(eval_val))
     advantage_comparitor = -(value_comparitor - tf.stop_gradient(eval_val))
@@ -137,19 +139,26 @@ def main():
 
     VALUE_COST_WEIGHT = 0.2
     MINIMIZE_COST_WEIGHT = 1.0-VALUE_COST_WEIGHT
-    ballancer = TensorLossBallancer(VALUE_COST_WEIGHT,MINIMIZE_COST_WEIGHT,ADAPT_COEF=0.95,MAG_ADJUST_COEF=0.99)
 
-    bal_val_loss,bal_min_loss,ballancer_ops = ballancer.adjust(value_loss,advantage_loss)
-
-    ballanced_minimizer_cost = advantage_loss + value_loss#bal_val_loss + bal_min_loss
+    combined_cost = advantage_loss + value_loss
+    #ballanced_minimizer_cost = advantage_loss + value_loss#bal_val_loss + bal_min_loss
 
     ADAM_learning_rate = 0.001
     optimizer_critic = tf.train.RMSPropOptimizer(learning_rate=ADAM_learning_rate)
     optimizer_min = tf.train.RMSPropOptimizer(learning_rate=ADAM_learning_rate)
-    critic_opt = optimizer_critic.minimize(critic_loss,var_list=critic_collection)
+    #critic_opt = optimizer_critic.minimize(critic_loss,var_list=critic_collection)
+
+    advant_grads = optimizer_min.compute_gradients(advantage_loss,var_list=main_collection)
+    value_grads = optimizer_min.compute_gradients(value_loss,var_list=main_collection)
+
+    advant_grad_mag = reduce(tf.math.add,(tf.reduce_sum(tf.sqrt(g*g)) for g,v in advant_grads if g is not None))
+    value_grad_mag = reduce(tf.math.add,(tf.reduce_sum(tf.sqrt(g*g)) for g,v in value_grads if g is not None))
+
+    tf.summary.scalar('advant_grad_mag', advant_grad_mag)
+    tf.summary.scalar('value_grad_mag', value_grad_mag)
 
     #optimizer_min = tf.train.GradientDescentOptimizer(learning_rate=ADAM_learning_rate)
-    minimizer_opt = optimizer_min.minimize(ballanced_minimizer_cost,var_list=main_collection)
+    minimizer_opt = optimizer_min.minimize(combined_cost,var_list=main_collection)
 
     tf.summary.scalar('advantage_loss', advantage_loss)
     tf.summary.scalar('value_loss', value_loss)
@@ -159,8 +168,8 @@ def main():
 
     #assval = tf.zeros(dtype=tf.float32,shape=(128,))
     with tf.Session() as sess:
-        #train_writer = tf.summary.FileWriter('./train',
-        #                                      sess.graph)
+        train_writer = tf.summary.FileWriter('./train',
+                                              sess.graph)
         sess.run(tf.global_variables_initializer())
 
         sum_idx = 0
@@ -200,7 +209,7 @@ def main():
                 cur_input = all_inputs[step]
                 true_reward = all_evals[step]
                 # minimizer train step:
-                _,_, val_loss_val,advantage_val,_,crit_loss_val = sess.run([minimizer_opt,ballancer_ops,value_loss,advantage_loss,critic_opt,critic_loss],feed_dict={
+                summary,_, val_loss_val,advantage_val,_,crit_loss_val = sess.run([merged,minimizer_opt,value_loss,advantage_loss,critic_loss,critic_loss],feed_dict={
                     input_img: cur_input,
                     value_comparitor: true_reward,
                 })
@@ -211,7 +220,7 @@ def main():
                 tot_advant_loss += advantage_val
                 tot_crit_loss += crit_loss_val
 
-            #train_writer.add_summary(summary, sum_idx)
+            train_writer.add_summary(summary, sum_idx)
             sum_idx += 1
             print("current loss totals:")
             print(tot_val_loss/num_steps)

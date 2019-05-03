@@ -83,20 +83,20 @@ def loss_generator():
     #for x in range(1,80):
     #    yield x,1.0+random.random()
     #    yield x,0.0
-    for y in range(1,40):
-        yield (1.0+random.random()),0.1*(0.1+random.random())
+    for y in range(1,100):
+        yield (0.1*random.random()),0.01*(random.random())
         #yield (1.0+random.random()),0.1*(0.1+random.random())
 
 def test_tensor_loss_ballancer():
     a_tensor = tf.placeholder(tf.float32,())
     b_tensor = tf.placeholder(tf.float32,())
-    ballancer = TensorLossBallancer(1.1,0.1,0.95,0.99)
+    ballancer = TensorLossBallancer(1.0,1.0,1.0,1.0,DECAY_RATE=1.0)
     newa,newb,stat_vals = ballancer.adjust(a_tensor,b_tensor)
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
 
         for a,b in loss_generator():
-            new_a, new_b, _ = sess.run((newa,newb,stat_vals),feed_dict={
+            new_a, new_b, _ = sess.run([newa,newb,stat_vals],feed_dict={
                 a_tensor: a,
                 b_tensor: b,
             })
