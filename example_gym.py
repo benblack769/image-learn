@@ -5,6 +5,7 @@ done = False
 print(env.reset())
 while not done:
     action = env.action_space.sample()
+    print(env.observation_space.shape)
     observation, reward, done, info = env.step(action)
     #env.render()
     print(action)

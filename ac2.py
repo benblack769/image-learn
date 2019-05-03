@@ -1,124 +1,229 @@
-import gym
-import multiprocessing as mp
-import time
-import math
 import numpy as np
-#env = gym.wrappers.Monitor(env, "recording")
+import random
+from gym_wrapper import MultiProcessEnvs,Envs
+from loss_ballancing import TensorLossBallancer
 
-def new_env():
-    env = gym.make('Pong-v0')
-    return env
+NUM_ENVS = 32
 
-class Envs:
-    def __init__(self, num_envs):
-        self.num_envs = num_envs
-        self.envs = [new_env() for e in range(num_envs)]
+all_envs = MultiProcessEnvs(NUM_ENVS)
 
-        self.observations = [env.reset() for env in self.envs]
-        self.rewards = [None for e in range(num_envs)]
+import tensorflow as tf
 
-    def get_observations(self):
-        return np.stack(self.observations)
+def init_envs():
+    for _ in range(50):
+        all_envs.set_actions(all_envs.random_actions())
 
-    def get_rewards(self):
-        return np.stack(self.rewards)
+def main_input_reduction(input):
+    DEPTH = 6
+    lay1size = 16
+    CONV1_SIZE=[3,3]
+    POOL_SIZE=[2,2]
+    POOL_STRIDES=[2,2]
+    orig_reduction = tf.layers.dense(
+        inputs=input,
+        units=lay1size,
+        activation=tf.nn.relu
+    )
+    cur_out = orig_reduction
+    for x in range(DEPTH):
+        lay1_outs = tf.layers.conv2d(
+            inputs=cur_out,
+            filters=lay1size,
+            kernel_size=CONV1_SIZE,
+            padding="same",
+            activation=tf.nn.relu)
+        lay_1_pool = tf.layers.average_pooling2d(
+            inputs=lay1_outs,
+            pool_size=POOL_SIZE,
+            strides=POOL_STRIDES,
+            padding='same',
+        )
+        #basic_outs.append(lay1_outs)
+        cur_out = lay_1_pool
+        print(cur_out.shape)
 
-    #def transform_action_vec_to_value(self,action_vec):
-    #    if isinstance(new_env().action_space,gym.spaces.Discrete):
-    #        pass
+    cur_out = tf.layers.flatten(cur_out)
+    fc_layer_size = 128
+    cur_out = tf.layers.dense(
+        inputs=cur_out,
+        units=fc_layer_size,
+        activation=tf.nn.relu
+    )
+    cur_out = tf.layers.dense(
+        inputs=cur_out,
+        units=fc_layer_size,
+        activation=tf.nn.relu
+    )
+    return cur_out
 
-    def set_actions(self, action_vecs):
-        for i in range(self.num_envs):
-            env = self.envs[i]
-            action = action_vecs[i]
+class AdvantageModel:
+    def __init__(self):
+        self.num_lays = 2
+        fc_layer_size = 128
+        self.lay1 = tf.layers.Dense(
+            units=fc_layer_size,
+            activation=tf.nn.relu,
+            name="hithere_MY_NAME_IS_BENJAMIN_BLACK"
+        )
+        self.lay2 = tf.layers.Dense(
+            units=fc_layer_size,
+            activation=tf.nn.relu
+        )
+        self.lay3 = tf.layers.Dense(
+            units=1,
+            activation=None
+        )
 
-            if env.action_space.contains(action):
-                self.observations[i] = env.reset()
-                min_reward = env.reward_range[0]
-                self.rewards[i] = min(-100,min_reward)
-            else:
-                observation, reward, done, info = env.step(action)
+    def val(self,action_vec,input_vec):
+        tot_vec = tf.concat([action_vec,input_vec],axis=1)
+        cur_out = self.lay1(tot_vec)
+        cur_out = self.lay2(cur_out)
+        cur_out = self.lay3(cur_out)
 
-                self.observations[i] = observation if not done else env.reset()
-                self.rewards[i] = reward
+        return cur_out
 
-    #def random_actions(self):
-    #    return [env.action_space.sample() for env in self.envs]
+def sqr(x):
+    return x * x
 
-def splits(number,splits):
-    res = []
-    num_left = number
-    for split_idx in range(splits):
-        splits_left = splits - split_idx
-        split_size = int(math.ceil(num_left / splits_left))
-
-        cur_idx = number - num_left
-        res.append(slice(cur_idx,cur_idx + split_size))
-
-        num_left -= split_size
-
-    return res
-
-class Splitter:
-    def __init__(self,number,num_splits):
-        self.number = number
-        self.split_list = splits(number,num_splits)
-
-    def split(self,l):
-        assert len(l) == self.number
-        return [l[s] for s in self.split_list]
-
-    def counts(self):
-        return [s.stop - s.start for s in self.split_list]
-
-class MultiProcessEnvs:
-    def __init__(self, num_envs):
-        self.num_envs = num_envs
-        self.num_procs = mp.cpu_count()
-
-        self.pipes = [mp.Pipe() for _ in range(self.num_procs)]
-        self.main_connects = [p[1] for p in self.pipes]
-
-        self.proc_splits = Splitter(self.num_envs,self.num_procs)
-
-        self.procs = []
-
-        for pipe,env_count in zip(self.pipes,self.proc_splits.counts()):
-            proc = mp.Process(target=MultiProcessEnvs.process_start,args=(pipe[0],env_count,))
-            proc.start()
-            self.procs.append(proc)
-
-        self.observations = np.concatenate([con.recv() for con in self.main_connects],axis=0)
+def value_cost(aprox_val, true_val):
+    return tf.reduce_sum(sqr(aprox_val - true_val))
 
 
-    def process_start(conn, num_envs):
-        envs = Envs(num_envs)
-        while True:
-            conn.send(envs.get_observations())
-            actions = conn.recv()
-            envs.set_actions(actions)
-            conn.send(envs.get_rewards())
+def main():
+    input_shape = all_envs.observation_space()
+    input_img = tf.placeholder(tf.float32,(None,)+input_shape)
+    input_action = tf.placeholder(tf.float32,(None,1))
+    value_comparitor = tf.placeholder(tf.float32,(None,1))
+    #input_img = tf.ones(dtype=tf.float32,shape=(32,)+input_shape)*2
 
-    def get_observation(self):
-        return self.observations
+    with tf.variable_scope("main_opt"):
+        input_vec = main_input_reduction(input_img)
 
-    def get_rewards(self):
-        return self.rewards
+        action_vec = tf.layers.dense(
+            inputs=input_vec,
+            units=1,
+            activation=None,
+        )
+        action_vec = tf.nn.sigmoid(action_vec) * 5
+        eval_val = tf.layers.dense(
+            inputs=input_vec,
+            units=1,
+            activation=None
+        )
 
-    def set_actions(self,actions):
-        for con,proc_actions in zip(self.main_connects,self.proc_splits.split(actions)):
-            con.send(proc_actions)
+    with tf.variable_scope("critic_opt"):
+        advant_model = AdvantageModel()
+        input_vec_critic = main_input_reduction(input_img)
+        critic_val = advant_model.val(action_vec,input_vec_critic)
 
-        self.rewards = np.concatenate([con.recv() for con in self.main_connects],axis=0)
-        self.observations = np.concatenate([con.recv() for con in self.main_connects],axis=0)
+    #critic_val_no_grad = advant_model.val(tf.stop_gradient(action_vec),input_vec_critic)
+
+    value_loss = value_cost(eval_val,value_comparitor)
+
+    advantage_value = critic_val #- tf.stop_gradient(eval_val))
+    advantage_comparitor = -(value_comparitor - tf.stop_gradient(eval_val))
+
+    advantage_loss = tf.reduce_sum(advantage_value)
+
+    critic_loss = value_cost(advantage_value,advantage_comparitor)
+
+    main_collection = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='main_opt')
+    critic_collection = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='critic_opt')
+
+    #print("main_collection")
+    #print(main_collection)
+    #print("critic_collection")
+    #print(critic_collection)
+
+    VALUE_COST_WEIGHT = 0.2
+    MINIMIZE_COST_WEIGHT = 1.0-VALUE_COST_WEIGHT
+    ballancer = TensorLossBallancer(VALUE_COST_WEIGHT,MINIMIZE_COST_WEIGHT,ADAPT_COEF=0.95,MAG_ADJUST_COEF=0.99)
+
+    bal_val_loss,bal_min_loss,ballancer_ops = ballancer.adjust(value_loss,advantage_loss)
+
+    ballanced_minimizer_cost = advantage_loss + value_loss#bal_val_loss + bal_min_loss
+
+    ADAM_learning_rate = 0.001
+    optimizer_critic = tf.train.RMSPropOptimizer(learning_rate=ADAM_learning_rate)
+    optimizer_min = tf.train.RMSPropOptimizer(learning_rate=ADAM_learning_rate)
+    critic_opt = optimizer_critic.minimize(critic_loss,var_list=critic_collection)
+
+    #optimizer_min = tf.train.GradientDescentOptimizer(learning_rate=ADAM_learning_rate)
+    minimizer_opt = optimizer_min.minimize(ballanced_minimizer_cost,var_list=main_collection)
+
+    tf.summary.scalar('advantage_loss', advantage_loss)
+    tf.summary.scalar('value_loss', value_loss)
+    tf.summary.scalar('critic_loss', critic_loss)
+    tf.summary.histogram('actions', action_vec)
+    merged = tf.summary.merge_all()
+
+    #assval = tf.zeros(dtype=tf.float32,shape=(128,))
+    with tf.Session() as sess:
+        #train_writer = tf.summary.FileWriter('./train',
+        #                                      sess.graph)
+        sess.run(tf.global_variables_initializer())
+
+        sum_idx = 0
+        for epoc in range(100000):
+            all_inputs = []
+            all_evals = []
+
+            tot_val_loss = 0
+            tot_advant_loss = 0
+            tot_crit_loss = 0
+            num_steps = 1
+            for step in range(num_steps+1):
+                # step enviornments
+                new_input = all_envs.get_observations()
+
+                #print("started action")
+                # new action generator
+                new_action_vec,new_eval_val = sess.run([action_vec,eval_val],feed_dict={
+                    input_img: new_input,
+                })
+                new_actions = all_envs.manipulate_actions(new_action_vec)
+
+                all_envs.set_actions(new_actions)
+                action_rewards = all_envs.get_rewards()
+                #print("executed action")
+
+                if step != num_steps:
+                    all_inputs.append(new_input)
+                if step != 0:
+                    DEGRADE_VAL = 0.9
+                    true_rewards = action_rewards + DEGRADE_VAL*new_eval_val
+                    for j in range(NUM_ENVS):
+                        print(new_actions[j],"\t",new_action_vec[j][0],"\t",true_rewards[j][0])
+                    all_evals.append(true_rewards)
+
+            for step in range(num_steps):
+                cur_input = all_inputs[step]
+                true_reward = all_evals[step]
+                # minimizer train step:
+                _,_, val_loss_val,advantage_val,_,crit_loss_val = sess.run([minimizer_opt,ballancer_ops,value_loss,advantage_loss,critic_opt,critic_loss],feed_dict={
+                    input_img: cur_input,
+                    value_comparitor: true_reward,
+                })
+
+                print("min2")
+
+                tot_val_loss += val_loss_val
+                tot_advant_loss += advantage_val
+                tot_crit_loss += crit_loss_val
+
+            #train_writer.add_summary(summary, sum_idx)
+            sum_idx += 1
+            print("current loss totals:")
+            print(tot_val_loss/num_steps)
+            print(tot_advant_loss/num_steps)
+            print(tot_crit_loss/num_steps)
+
+        #sess.run(tf.assign(tf.get_variable(''))
+        #for x in range(1000000000):
+        pass
+
+
+
 
 if __name__ == "__main__":
-    size = 128
-    envs = MultiProcessEnvs(size)
-    base_env = new_env()
-    start = time.time()
-    for i in range(1000):
-        envs.set_actions([base_env.action_space.sample() for _ in range(size)])
-        end = time.time()
-        print(end-start)
-        print((end-start)/(1+i))
+    main()

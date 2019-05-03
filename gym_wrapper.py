@@ -2,6 +2,7 @@ import gym
 import multiprocessing as mp
 import time
 import math
+import random
 import numpy as np
 #env = gym.wrappers.Monitor(env, "recording")
 
@@ -9,38 +10,84 @@ def new_env():
     env = gym.make('Pong-v0')
     return env
 
+def process_action(env,vector):
+    space = env.action_space
+    if isinstance(space,gym.spaces.Box):
+        return vector
+    elif isinstance(space,gym.spaces.Discrete):
+        return int(vector)
+    else:
+        raise exception()
+
 class Envs:
     def __init__(self, num_envs):
         self.num_envs = num_envs
+        self.example_env = new_env()
         self.envs = [new_env() for e in range(num_envs)]
 
         self.observations = [env.reset() for env in self.envs]
-        self.rewards = [None for e in range(num_envs)]
+        self.rewards = [0 for e in range(num_envs)]
 
     def get_observations(self):
         return np.stack(self.observations)
 
     def get_rewards(self):
-        return np.stack(self.rewards)
+        arr = np.stack(self.rewards)
+        if len(arr.shape) < 2:
+            arr = arr.reshape(arr.shape[0],1)
+        return arr
 
     #def transform_action_vec_to_value(self,action_vec):
     #    if isinstance(new_env().action_space,gym.spaces.Discrete):
     #        pass
 
+    def observation_space(self):
+        return self.example_env.observation_space.shape
+
+    def action_space(self):
+        space = self.example_env.action_space
+        if isinstance(space,gym.spaces.Box):
+            return space.shape
+        else:
+            return space.n
+
+    def random_actions(self):
+        return [env.action_space.sample() for env in self.envs]
+
+    def manipulate_actions(self,action_vecs):
+        new_actions = []
+        for i in range(self.num_envs):
+            env = self.envs[i]
+            action = process_action(env,action_vecs[i])
+
+            prop_randomize_invalid = 0.3
+            if not env.action_space.contains(action) and random.random() < prop_randomize_invalid:
+                action = env.action_space.sample()
+
+            prop_randomize_valid = 0.1
+            if env.action_space.contains(action) and random.random() < prop_randomize_valid:
+                action = env.action_space.sample()
+
+            new_actions.append(action)
+
+        return new_actions
+
     def set_actions(self, action_vecs):
         for i in range(self.num_envs):
             env = self.envs[i]
-            action = action_vecs[i]
+            action = process_action(env,action_vecs[i])
 
-            if env.action_space.contains(action):
-                self.observations[i] = env.reset()
+            if not env.action_space.contains(action):
+                observation = env.reset()
                 min_reward = env.reward_range[0]
-                self.rewards[i] = min(-100,min_reward)
+                reward = max(-1,min_reward)
             else:
                 observation, reward, done, info = env.step(action)
 
-                self.observations[i] = observation if not done else env.reset()
-                self.rewards[i] = reward
+                observation = observation if not done else env.reset()
+
+            self.observations[i] = observation
+            self.rewards[i] = reward
 
     #def random_actions(self):
     #    return [env.action_space.sample() for env in self.envs]
@@ -73,6 +120,7 @@ class Splitter:
 
 class MultiProcessEnvs:
     def __init__(self, num_envs):
+        self.example_env = new_env()
         self.num_envs = num_envs
         self.num_procs = mp.cpu_count()
 
@@ -90,7 +138,6 @@ class MultiProcessEnvs:
 
         self.observations = np.concatenate([con.recv() for con in self.main_connects],axis=0)
 
-
     def process_start(conn, num_envs):
         envs = Envs(num_envs)
         while True:
@@ -99,11 +146,39 @@ class MultiProcessEnvs:
             envs.set_actions(actions)
             conn.send(envs.get_rewards())
 
-    def get_observation(self):
+    def get_observations(self):
         return self.observations
 
     def get_rewards(self):
         return self.rewards
+
+    def observation_space(self):
+        return self.example_env.observation_space.shape
+
+    def action_space(self):
+        space = self.example_env.action_space
+        if isinstance(space,gym.spaces.Box):
+            return space.shape
+        else:
+            return space.n
+
+    def manipulate_actions(self,action_vecs):
+        new_actions = []
+        for i in range(self.num_envs):
+            env = self.example_env
+            action = process_action(env,action_vecs[i])
+
+            prop_randomize_invalid = 0.3
+            if not env.action_space.contains(action) and random.random() < prop_randomize_invalid:
+                action = env.action_space.sample()
+
+            prop_randomize_valid = 0.1
+            if env.action_space.contains(action) and random.random() < prop_randomize_valid:
+                action = env.action_space.sample()
+
+            new_actions.append(action)
+
+        return new_actions
 
     def set_actions(self,actions):
         for con,proc_actions in zip(self.main_connects,self.proc_splits.split(actions)):
@@ -111,6 +186,9 @@ class MultiProcessEnvs:
 
         self.rewards = np.concatenate([con.recv() for con in self.main_connects],axis=0)
         self.observations = np.concatenate([con.recv() for con in self.main_connects],axis=0)
+
+    def random_actions(self):
+        return [env.action_space.sample() for env in self.envs]
 
 if __name__ == "__main__":
     size = 128

@@ -1,1 +1,0 @@
-http://cocodataset.org/#download
