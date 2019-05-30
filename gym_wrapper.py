@@ -7,15 +7,16 @@ import numpy as np
 #env = gym.wrappers.Monitor(env, "recording")
 
 def new_env():
-    env = gym.make('Pong-v0')
+    env = gym.make('BipedalWalkerHardcore-v2')
     return env
+
 
 def process_action(env,vector):
     space = env.action_space
     if isinstance(space,gym.spaces.Box):
         return vector
     elif isinstance(space,gym.spaces.Discrete):
-        return int(vector)
+        return np.argmax(vector)
     else:
         raise exception()
 
@@ -28,8 +29,13 @@ class Envs:
         self.observations = [env.reset() for env in self.envs]
         self.rewards = [0 for e in range(num_envs)]
 
+        self.are_news = [False for e in range(num_envs)]
+
     def get_observations(self):
         return np.stack(self.observations)
+
+    def are_new(self):
+        return np.stack(self.are_news)
 
     def get_rewards(self):
         arr = np.stack(self.rewards)
@@ -81,6 +87,7 @@ class Envs:
                 observation = env.reset()
                 min_reward = env.reward_range[0]
                 reward = max(-1,min_reward)
+                done = True
             else:
                 observation, reward, done, info = env.step(action)
 
@@ -88,6 +95,7 @@ class Envs:
 
             self.observations[i] = observation
             self.rewards[i] = reward
+            self.are_news[i] = done
 
     #def random_actions(self):
     #    return [env.action_space.sample() for env in self.envs]
@@ -131,23 +139,34 @@ class MultiProcessEnvs:
 
         self.procs = []
 
+        #spawn_ctx = mp.get_context("fork") #
+
         for pipe,env_count in zip(self.pipes,self.proc_splits.counts()):
             proc = mp.Process(target=MultiProcessEnvs.process_start,args=(pipe[0],env_count,))
             proc.start()
             self.procs.append(proc)
 
         self.observations = np.concatenate([con.recv() for con in self.main_connects],axis=0)
+        self.are_news = np.concatenate([con.recv() for con in self.main_connects],axis=0)
+
+    def close(self):
+        for proc in self.procs:
+            proc.terminate()
 
     def process_start(conn, num_envs):
         envs = Envs(num_envs)
         while True:
             conn.send(envs.get_observations())
+            conn.send(envs.are_new())
             actions = conn.recv()
             envs.set_actions(actions)
             conn.send(envs.get_rewards())
 
     def get_observations(self):
         return self.observations
+
+    def are_new(self):
+        return self.are_news
 
     def get_rewards(self):
         return self.rewards
@@ -186,6 +205,7 @@ class MultiProcessEnvs:
 
         self.rewards = np.concatenate([con.recv() for con in self.main_connects],axis=0)
         self.observations = np.concatenate([con.recv() for con in self.main_connects],axis=0)
+        self.are_news = np.concatenate([con.recv() for con in self.main_connects],axis=0)
 
     def random_actions(self):
         return [env.action_space.sample() for env in self.envs]
