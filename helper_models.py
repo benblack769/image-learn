@@ -1,45 +1,35 @@
 import tensorflow as tf
 import numpy as np
 
-class DataCollector:
-    def __init__(self, learner,name_dict=None):
-        self.name_dict = name_dict
-        self.data = dict()
-        self.datasize = self.learner.num_inputs()
+def calc_apply_grads(inputs,outputs,outputs_costs,variables,optimizer):
+    assert len(outputs_costs) == len(outputs)
+    '''
+    we wish to minimize sum(outputs_costs) wrt. inputs
 
-    def idx(self,name):
-        assert self.name_dict is not None
-        return self.name_dict[name]
+    i.e.
+    dout/din = sum(outputs_costs)
 
-    def add_multi_data(self,timestep,input_datas,input_idx=0):
-        for i,data in enumerate(input_datas):
-            self.add_data(timestep,data,input_idx+i)
+    solve the inverse derivative and we must put in
+    y = sum(outputs_costs) * outputs
 
-    def add_timestep_data(self,timestep,newdata):
-        assert len(data) == self.datasize
-        if timestep not in self.data:
-            self.init_timestep(timestep)
+    into the tf.gradients function
+    '''
+    total_outputs = [out*outcost for out,outcost in zip(outputs_costs,outputs)]
 
-        step_data = self.data[timestep]
-        assert len({len(d) for d in step_data}) == 1, "unequal sized inputs should be added to timestep"
-        for step in zip(step_data,newdata):
-            step.append(newdata)
+    input_tensors = inputs + variables
 
-    def init_timestep(self,timestep):
-        self.data[timestep] = [[] for _ in range(self.datasize)]
+    tensors_grads = tf.gradients(
+        ys=total_outputs,
+        xs=input_tensors
+    )
+    inputs_grads = tensors_grads[:len(inputs)]
+    variables_grads = tensors_grads[len(inputs):]
 
-    def add_data(self,timestep,input_data,input_idx=0):
-        if timestep not in self.data:
-            self.init_timestep(timestep)
-        self.data[timestep][input_idx].append(input_data)
+    var_grad_pairs = zip(variables_grads,variables)
 
-    def timestep_complete(self,timestep):
-        step_data = self.data[timestep]
-        concat_data = [np.concatenate(datas,axis=0) for datas in step_data]
-        assert len({len(d) for d in concat_data}) == 1, "unequal sized inputs should not be complete"
+    var_update_op = optimizer.apply_gradients(var_grad_pairs)
+    return inputs_grads,var_update_op
 
-        del self.data[timestep]
-        return concat_data
 
 class BaseLearner:
     def __init__(self,inputs,outputs,var_collection):
@@ -111,6 +101,12 @@ class BaseLearner:
     def calc_input_gradients(self,sess,inputs_values,output_costs):
         return sess.run(self.in_grads,feed_dict=self.get_feed_dict(inputs_values,output_costs))
 
+
+def prod(l):
+    p = 1
+    for v in l:
+        p *= v
+    return v
 
 def listize(scalarfn):
     '''
