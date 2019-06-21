@@ -86,7 +86,7 @@ class Envs:
             if not env.action_space.contains(action):
                 observation = env.reset()
                 min_reward = env.reward_range[0]
-                reward = max(-1,min_reward)
+                reward = max(-100,min_reward)
                 done = True
             else:
                 observation, reward, done, info = env.step(action)
@@ -208,7 +208,7 @@ class MultiProcessEnvs:
         self.are_news = np.concatenate([con.recv() for con in self.main_connects],axis=0)
 
     def random_actions(self):
-        return [env.action_space.sample() for env in self.envs]
+        return [self.example_env.action_space.sample() for env in range(self.num_envs)]
 
 if __name__ == "__main__":
     size = 128
