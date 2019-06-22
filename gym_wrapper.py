@@ -10,7 +10,6 @@ def new_env():
     env = gym.make('BipedalWalkerHardcore-v2')
     return env
 
-
 def process_action(env,vector):
     space = env.action_space
     if isinstance(space,gym.spaces.Box):

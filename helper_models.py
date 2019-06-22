@@ -25,10 +25,12 @@ def calc_apply_grads(inputs,outputs,outputs_costs,variables,optimizer):
     inputs_grads = tensors_grads[:len(inputs)]
     variables_grads = tensors_grads[len(inputs):]
 
+    var_grad_mag = sum((tf.reduce_sum(vg*vg) for vg in variables_grads), tf.zeros(1))
+
     var_grad_pairs = zip(variables_grads,variables)
 
     var_update_op = optimizer.apply_gradients(var_grad_pairs)
-    return inputs_grads,var_update_op
+    return inputs_grads,var_update_op,var_grad_mag
 
 
 class BaseLearner:

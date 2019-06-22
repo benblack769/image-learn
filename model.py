@@ -5,6 +5,9 @@ from helper_models import calc_apply_grads, prod
 def tf_sum(x):
     return tf.reduce_sum(x)
 
+def tf_sumd1(x):
+    return tf.reduce_sum(x,axis=1)
+
 def sqr(x):
     return x * x
 
@@ -103,16 +106,6 @@ class InputProcessor:
         in_spread = self.input_spreader.calc(concat)
         return self.process_resnet.calc(in_spread)
 
-    def gradient_update_calc(self,input1,input2,out_costs,optimizer):
-        _, var_update = calc_apply_grads(
-            inputs=[input1,input2],
-            outputs=[self.calc(input1,input2)],
-            outputs_costs=[out_costs],
-            variables=self.vars(),
-            optimizer=optimizer
-        )
-        return var_update
-
     def vars(self):
         return self.input_spreader.vars() + self.process_resnet.vars()
 
@@ -157,17 +150,6 @@ class CriticCalculator:
 
         return [eval_val,advantage_val,current_randcosts,prev_radvec_prediction]
 
-    def gradient_update_calc(self,input,action,randvec,true_eval,true_prev_randvec,true_randvec_costs):
-        calc_vals = self.calc(input,action,randvec)
-
-        [input_vec_grad], var_update = calc_apply_grads(
-            inputs=[input1,input2],
-            outputs=calc_vals,
-            outputs_costs=[out_costs],
-            variables=self.vars(),
-            optimizer=optimizer
-        )
-        return input_vec_grad,var_update
 
 
 class Actor:
@@ -182,16 +164,6 @@ class Actor:
         calced_val =  self.process_resnet.calc(in_spread)
         fin_action = self.condenser.calc(calced_val)
         return fin_action
-
-    def gradient_update_calc(self,input_vec,rand_vec,action_grad,optimizer):
-        _, var_update = calc_apply_grads(
-            inputs=[input1,input2],
-            outputs=[self.calc(input_vec,rand_vec)],
-            outputs_costs=[action_grad],
-            variables=self.vars(),
-            optimizer=optimizer
-        )
-        return var_update
 
     def vars(self):
         return (self.input_spreader.vars() +
@@ -228,7 +200,7 @@ class Runner:
         self.chosen_action = self.actor.calc(self.actor_input_vector,self.current_randvec)
 
         self.eval_cost = tf_sum(sqr(self.eval-self.true_eval))
-        advantage_comparitor = tf.stop_gradient((self.true_eval - self.eval))
+        advantage_comparitor = tf.stop_gradient(-(self.true_eval - self.eval))
         self.advantage_cost = tf_sum(sqr(self.advantage-advantage_comparitor))
         self.randvec_pred_cost = tf_sum(sqr(self.prev_randvec - self.randvec_pred))
         self.randcosts_pred_cost = tf_sum(sqr(self.true_randvec_costs - self.randcosts))
@@ -245,7 +217,7 @@ class Runner:
         self.critic_optimzer = tf.train.RMSPropOptimizer(learning_rate=critic_learning_rate)
         self.actor_optimzer = tf.train.GradientDescentOptimizer(learning_rate=actor_learning_rate)
 
-        _,self.critic_update_op = calc_apply_grads(
+        _,self.critic_update_op,self.critic_grad_mag = calc_apply_grads(
             inputs=[self.true_input1,self.true_input2],
             outputs=[tot_cost],
             outputs_costs=[1.0],
@@ -253,10 +225,16 @@ class Runner:
             optimizer=self.critic_optimzer
         )
         _,self.actor_advantage_val,self.actor_randcosts_est,_ = self.critic_calculator.calc(self.critic_input_vector,self.chosen_action,self.current_randvec)
-        _,self.actor_update_op = calc_apply_grads(
+        self.total_actor_cost = tf_sumd1(self.actor_advantage_val)#*1.0 + 0.1*tf_sumd1(1.0/(1.0+sqr(3*self.actor_advantage_val)))#0.4 * tf_sumd1(self.actor_randcosts_est)
+
+
+        #self.eval = self.eval + 0.3*tf_sum(1.0/(1.0+sqr(3*self.actor_advantage_val)))# + 0.4 * tf_sumd1(1.0/(1.0+sqr(6*self.actor_randcosts_est)))
+
+
+        _,self.actor_update_op,self.actor_grad_mag = calc_apply_grads(
             inputs=[self.true_input1,self.true_input2],
-            outputs=[self.actor_advantage_val,self.actor_randcosts_est],
-            outputs_costs=[1.0,0.001],
+            outputs=[self.total_actor_cost],
+            outputs_costs=[1.0],
             variables=self.actor.vars() + self.actor_input_processor.vars(),
             optimizer=self.actor_optimzer
         )
@@ -275,35 +253,16 @@ class Runner:
         })
         return chosen_action
 
-    def run_critic_update(self,sess,input_dict):
-        next_eval,randvec_reconstr = sess.run([self.eval,self.randvec_pred],feed_dict={
-            self.true_input1:input_dict['input'],
-            self.true_input2:input_dict['next_input'],
-        })
-        true_eval = input_dict['reward'] + next_eval * 0.9
-        randvec_reconstr_costs = sqr(randvec_reconstr-input_dict['prev_randvec'])
-
-        [critic_in_grad,eval_cost_v,eval_v,adv_v,randcosts_est,action] = sess.run([self.critic_update_op,self.eval_cost,self.eval,self.actor_advantage_val,self.actor_randcosts_est,self.chosen_action],feed_dict={
-            self.true_input1:input_dict['prev_input'],
-            self.true_input2:input_dict['input'],
-            self.true_action:input_dict['action'],
-            self.current_randvec:input_dict['cur_randvec'],
-            self.prev_randvec:input_dict['prev_randvec'],
-            self.true_eval:true_eval,
-            self.true_randvec_costs:randvec_reconstr_costs,
-        })
-        return float(true_eval[0][0]),float(eval_cost_v),float(eval_v[0][0]),float(adv_v[0][0]),float(randcosts_est[0][0]),action[0]
-
-
     def run_gradient_update(self,sess,input_dict):
         next_eval,randvec_reconstr = sess.run([self.eval,self.randvec_pred],feed_dict={
             self.true_input1:input_dict['input'],
             self.true_input2:input_dict['next_input'],
+            self.current_randvec:input_dict['next_randvec'],
         })
+        randvec_reconstr_costs = sqr(randvec_reconstr-input_dict['cur_randvec'])
         true_eval = input_dict['reward'] + next_eval * 0.9
-        randvec_reconstr_costs = sqr(randvec_reconstr-input_dict['prev_randvec'])
 
-        [critic_in_grad,eval_cost_v,eval_v,adv_v,randcosts_est,action] = sess.run([self.combined_update,self.eval_cost,self.eval,self.actor_advantage_val,self.actor_randcosts_est,self.chosen_action],feed_dict={
+        [tot_actor_costs,critic_in_grad,eval_cost_v,eval_v,adv_v,randcosts_est,action] = sess.run([self.actor_grad_mag,self.combined_update,self.eval_cost,self.eval,self.actor_advantage_val,self.actor_randcosts_est,self.chosen_action],feed_dict={
             self.true_input1:input_dict['prev_input'],
             self.true_input2:input_dict['input'],
             self.true_action:input_dict['action'],
@@ -312,4 +271,4 @@ class Runner:
             self.true_eval:true_eval,
             self.true_randvec_costs:randvec_reconstr_costs,
         })
-        return float(true_eval[0][0]),float(eval_cost_v),float(eval_v[0][0]),float(adv_v[0][0]),float(randcosts_est[0][0]),action[0]
+        return tot_actor_costs,float(true_eval[0][0]),float(eval_cost_v),float(eval_v[0][0]),float(adv_v[0][0]),float(randcosts_est[0][0]),action[0]
