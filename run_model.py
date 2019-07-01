@@ -19,7 +19,7 @@ observation_shape = list(envs.observation_space())
 
 NUM_ENVS = 1
 
-LAYER_SIZE = 64
+LAYER_SIZE = 48
 RAND_SIZE = 8
 model = Runner(action_shape,observation_shape,LAYER_SIZE,RAND_SIZE)
 
@@ -37,7 +37,7 @@ with tf.Session() as sess:
     while True:
         current_input = envs.get_observations()
         #actions = [env.action_space.sample()]
-        if steps % 16 == 0:
+        if steps % 4 == 0:
             randvec = new_randvec(RAND_SIZE)
         actions = model.calc_action_data(sess,current_input,prev_input,randvec)
         env.render()

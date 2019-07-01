@@ -1,12 +1,10 @@
-import tensorflow as tf
 import numpy as np
 import random as rand
 from collections import defaultdict
 
 class StateData:
-    def __init__(self,input,randvec,action,true_reward):
+    def __init__(self,input,action,true_reward):
         self.input = input
-        self.randvec = randvec
         self.action = action
         self.true_reward = true_reward
 
@@ -109,10 +107,10 @@ class TempStorage:
 
 def combine_dict_list(dict_list):
     list_dict = defaultdict(list)
-    for dict in dict_list:
-        for k,v in dict.items():
+    for dct in dict_list:
+        for k,v in dct.items():
             list_dict[k].append(v)
-    return list_dict
+    return dict(list_dict)
 
 class StateStorage:
     def __init__(self,num_envs,keep_size):
@@ -121,25 +119,6 @@ class StateStorage:
         QUEUE_SIZE = 3
         self.queue = QueueSampler(QUEUE_SIZE)
         self.sampler = TempStorage(keep_size)
-
-    '''def sample_train_data(self,batch_size):
-        assert len(self.queue) == self.keep_size
-
-        sampled_idxs = self.queue.sample_idxs(1,1,batch_size)
-        env_idxs = np.random.randint(0,self.num_envs,size=batch_size)
-
-        prev_entry = gather_item_idxs(self.queue.get_idxs(sampled_idxs - 1),env_idxs)
-        input_entry = gather_item_idxs(self.queue.get_idxs(sampled_idxs),env_idxs)
-        next_entry = gather_item_idxs(self.queue.get_idxs(sampled_idxs + 1),env_idxs)
-        return {
-            "prev_input": np.stack([pe.input for pe in prev_entry]),
-            "input": np.stack([pe.input for pe in input_entry]),
-            "next_input": np.stack([pe.input for pe in next_entry]),
-            "action": np.stack([pe.action for pe in input_entry]),
-            "cur_randvec": np.stack([pe.randvec for pe in input_entry]),
-            "prev_randvec": np.stack([pe.randvec for pe in prev_entry]),
-            "reward": np.stack([pe.true_reward for pe in input_entry]),
-        }'''
 
     def update_data(self,idxs):
         num_entries = len(entries)
@@ -160,10 +139,6 @@ class StateStorage:
                 "input": ie.input,
                 "next_input": ne.input,
                 "action": ie.action,
-                "cur_randvec": ie.randvec,
-                "prev_randvec": pe.randvec,
-                "next_randvec": ne.randvec,
-                "next_action": ne.action,
                 "reward": ie.true_reward,
             } for pe,ie,ne in zip(prev_entry,input_entry,next_entry)]
             for mag,entry in zip(advantage_magnitudes,new_entries):
