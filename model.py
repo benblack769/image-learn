@@ -16,9 +16,9 @@ def sqr(x):
 class Dense:
     def __init__(self,input_dim,out_dim,activation):
         stddev = 1.0/input_dim**(0.5**0.5)
-        self.weights = tf.Variable(tf.random.normal([input_dim,out_dim], stddev=stddev),
+        self.weights = tf.Variable(tf.random_normal([input_dim,out_dim], stddev=stddev),
                               name="weights")
-        self.biases = tf.Variable(tf.zeros(out_dim),name="biases")
+        self.biases = tf.Variable(tf.ones(out_dim)*0.01,name="biases")
         self.activation = activation
 
     def calc(self,input_vec):
@@ -33,7 +33,7 @@ def batch_norm(input):
     means = tf.reduce_mean(input,axis=1,keepdims=True)
     input -= (means)
     mags = tf.sqrt(tf.reduce_mean(sqr(input),axis=1,keepdims=True))
-    input /= (mags)
+    input /= (mags+0.01)
     return input
 
 class BatchNorm:
@@ -203,71 +203,6 @@ class MainModel:
         self.critic_calculator = CriticCalculator(action_size,RAND_SIZE,LAYER_SIZE)
         self.actor = Actor(RAND_SIZE,action_size,LAYER_SIZE)
 
-        return
-
-        self.true_input1 = tf.placeholder(shape=[None,]+observation_shape,dtype=tf.float32)
-        self.true_input2 = tf.placeholder(shape=[None,]+observation_shape,dtype=tf.float32)
-        self.true_action = tf.placeholder(shape=[None,action_size],dtype=tf.float32)
-        self.current_randvec = tf.placeholder(shape=[None,RAND_SIZE],dtype=tf.float32)
-        self.true_eval = tf.placeholder(shape=[None,1],dtype=tf.float32)
-        self.was_true_action = tf.placeholder(shape=[None,1],dtype=tf.float32)
-        self.was_good_sample = tf.placeholder(shape=[None,1],dtype=tf.float32)
-
-        self.actor_input_vector = self.actor_input_processor.calc(self.true_input1,self.true_input2)
-        self.critic_input_vector = self.critic_input_processor.calc(self.true_input1,self.true_input2)
-        self.eval,self.sampled_logits,self.better_logits,self.randvec_pred = self.critic_calculator.calc(self.critic_input_vector,self.true_action)
-        self.chosen_action = self.actor.calc(self.actor_input_vector,self.current_randvec)
-
-        self.better_probs = tf.sigmoid(self.better_logits)
-
-        better_comparitor = tf.stop_gradient(tf.cast(tf.math.greater(self.true_eval,self.eval),tf.float32))
-        self.better_cost = tf_sum(self.was_true_action * tf.nn.sigmoid_cross_entropy_with_logits(labels=better_comparitor,logits=self.better_logits))
-        self.eval_cost = tf_sum(self.was_true_action * sqr(self.eval-self.true_eval))
-        self.sampled_cost = tf_sum((1.0-self.was_true_action) * tf.nn.sigmoid_cross_entropy_with_logits(labels=self.was_good_sample,logits=self.sampled_logits))
-        #advantage_comparitor = tf.stop_gradient(-(self.true_eval - self.eval))
-        self.was_randvec_sampled = (1.0-self.was_true_action) * (1.0-self.was_good_sample)
-        self.randvec_pred_cost = tf_sum(self.was_randvec_sampled * sqr(self.current_randvec - self.randvec_pred))
-
-
-        tot_cost = (
-            self.better_cost +
-            self.sampled_cost +
-            self.eval_cost +
-            self.randvec_pred_cost
-        )
-
-        critic_learning_rate = 0.001
-        actor_learning_rate = 0.00001
-        self.critic_optimzer = tf.train.RMSPropOptimizer(learning_rate=critic_learning_rate)
-        self.actor_optimzer = tf.train.GradientDescentOptimizer(learning_rate=actor_learning_rate)
-
-        _,self.critic_update_op,self.critic_grad_mag = calc_apply_grads(
-            inputs=[self.true_input1,self.true_input2],
-            outputs=[tot_cost],
-            outputs_costs=[1.0],
-            variables=self.critic_calculator.vars() + self.critic_input_processor.vars(),
-            optimizer=self.critic_optimzer
-        )
-        _,self.actor_sampled_logits,self.actor_better_logits,self.actor_randvec_pred = self.critic_calculator.calc(self.critic_input_vector,self.chosen_action)
-        self.actor_better_probs = tf.sigmoid(self.actor_better_logits)
-        self.actor_randvec_pred_costs = 0.01*tf_sumd1(sqr(self.current_randvec - self.actor_randvec_pred))
-        self.actor_sampled_costs = tf_sumd1(-self.actor_sampled_logits)
-        self.actor_better_costs = tf_sumd1(-self.actor_better_logits)
-        self.total_actor_cost = self.actor_sampled_costs + self.actor_better_costs + self.actor_randvec_pred_costs
-
-        _,self.actor_update_op,self.actor_grad_mag = calc_apply_grads(
-            inputs=[self.critic_input_vector],
-            outputs=[self.total_actor_cost],
-            outputs_costs=[1.0],
-            variables=self.actor.vars() + self.actor_input_processor.vars(),
-            optimizer=self.actor_optimzer
-        )
-
-        self.combined_update = tf.group(
-            self.actor_update_op,
-            self.critic_update_op
-        )
-
     def calc_action(self,input1,input2,randvec):
         input_vec = self.actor_input_processor.calc(input1,input2)
         actions = self.actor.calc(input_vec,randvec)
@@ -279,10 +214,10 @@ class MainModel:
         return eval
 
     def random_actions(self,shape):
-        return tf.random.uniform(shape=shape+self.action_shape,minval=-1,maxval=1,dtype=tf.float32)
+        return tf.random_uniform(shape=shape+self.action_shape,minval=-1,maxval=1,dtype=tf.float32)
 
     def gen_randoms(self,size):
-        rand_int = tf.random.uniform(shape=[size,self.RAND_SIZE],minval=0,maxval=1+1,dtype=tf.int32)
+        rand_int = tf.random_uniform(shape=[size,self.RAND_SIZE],minval=0,maxval=1+1,dtype=tf.int32)
         rand_float = tf.cast(rand_int,tf.float32)
         return rand_float
 
@@ -311,16 +246,13 @@ class MainModel:
         eval,sampled_logits,better_logits,randvec_pred = self.critic_calculator.calc(critic_input_vector,true_action)
         chosen_action = self.actor.calc(actor_input_vector,current_randvec)
 
-        better_probs = tf.sigmoid(better_logits)
-
         better_comparitor = tf.stop_gradient(tf.cast(tf.math.greater(true_eval,eval),tf.float32))
-        better_cost = tf_sum(was_true_action * tf.nn.sigmoid_cross_entropy_with_logits(labels=better_comparitor,logits=better_logits))
-        eval_cost = tf_sum(was_true_action * sqr(eval-true_eval))
-        sampled_cost = tf_sum((1.0-was_true_action) * tf.nn.sigmoid_cross_entropy_with_logits(labels=was_good_sample,logits=sampled_logits))
+        better_cost = tf_sumd1(was_true_action * tf.nn.sigmoid_cross_entropy_with_logits(labels=better_comparitor,logits=better_logits))
+        eval_cost = tf_sumd1(was_true_action * sqr(eval-true_eval))
+        sampled_cost = tf_sumd1((1.0-was_true_action) * tf.nn.sigmoid_cross_entropy_with_logits(labels=was_good_sample,logits=sampled_logits))
         #advantage_comparitor = tf.stop_gradient(-(true_eval - eval))
         was_randvec_sampled = (1.0-was_true_action) * (1.0-was_good_sample)
-        randvec_pred_cost = tf_sum(was_randvec_sampled * sqr(current_randvec - randvec_pred))
-
+        randvec_pred_cost = tf_sumd1(was_randvec_sampled * sqr(current_randvec - randvec_pred))
 
         tot_cost = (
             better_cost +
@@ -329,7 +261,7 @@ class MainModel:
             randvec_pred_cost
         )
 
-        critic_learning_rate = 0.001
+        critic_learning_rate = 0.0001
         actor_learning_rate = 0.00001
         critic_optimzer = tf.train.RMSPropOptimizer(learning_rate=critic_learning_rate)
         actor_optimzer = tf.train.GradientDescentOptimizer(learning_rate=actor_learning_rate)
@@ -345,7 +277,7 @@ class MainModel:
         actor_better_probs = tf.sigmoid(actor_better_logits)
         actor_randvec_pred_costs = 0.01*tf_sumd1(sqr(current_randvec - actor_randvec_pred))
         actor_sampled_costs = tf_sumd1(-actor_sampled_logits)
-        actor_better_costs = tf_sumd1(-actor_better_logits)
+        actor_better_costs = 0#tf_sumd1(-actor_better_logits)
         total_actor_cost = actor_sampled_costs + actor_better_costs + actor_randvec_pred_costs
 
         _,actor_update_op,actor_grad_mag = calc_apply_grads(
@@ -360,7 +292,7 @@ class MainModel:
             actor_update_op,
             critic_update_op
         )
-        return combined_update,better_cost,eval_cost,sampled_cost,randvec_pred_cost,chosen_action
+        return [combined_update,better_cost,tf_sum(better_cost),tf_sum(eval_cost),tf_sum(sampled_cost),tf_sum(randvec_pred_cost),chosen_action[0]]
 
     def steady_sample_action(self,input1,input2,IN_LEN):
         num_inputs = IN_LEN
@@ -373,7 +305,6 @@ class MainModel:
         NUM_RAW = 8
         NUM_SAMP = NUM_RAW + NUM_CALCS
         raw_samples = self.random_actions([num_inputs*NUM_RAW])
-        print()
         action_size = prod(self.action_shape)
         reshaped_calcs = tf.reshape(calced_samples,[num_inputs,NUM_CALCS,action_size])
         reshaped_raws = tf.reshape(raw_samples,[num_inputs,NUM_RAW,action_size])
@@ -385,7 +316,7 @@ class MainModel:
             input2=repeat_axis0(input2, NUM_SAMP),
             actions=flat_samples
         )
-        target_probs = sqr(tf.random.uniform(shape=[num_inputs,NUM_SAMP],maxval=1.0))
+        target_probs = sqr(tf.random_uniform(shape=[num_inputs,NUM_SAMP],maxval=1.0))
 
         reshaped_probs = tf.reshape(sample_probs,[num_inputs,NUM_SAMP])
         distance_target = sqr(reshaped_probs - target_probs)
@@ -414,7 +345,7 @@ class MainModel:
             gen_random_vals
         )
         all_actions = tf.concat([true_actions,sampled_actions,gen_actions],axis=0)
-        all_randvecs = tf.concat([tf.zeros([IN_LEN,self.RAND_SIZE]),tf.zeros([IN_LEN,self.RAND_SIZE]),gen_random_vals],axis=0)
+        all_randvecs = tf.concat([self.gen_randoms(IN_LEN*2),gen_random_vals],axis=0)
         all_true_evals = tf.concat([true_eval,tf.zeros([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
         was_good_sample = tf.concat([tf.zeros([IN_LEN,1]),tf.ones([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
         was_true_action = tf.concat([tf.ones([IN_LEN,1]),tf.zeros([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
@@ -423,7 +354,7 @@ class MainModel:
         prev_inputs = repeat_axis0(stored_data.prev_input,NUM_TILES)
         inputs = repeat_axis0(stored_data.cur_input,NUM_TILES)
 
-        return self.evaluate_update(
+        res_list = self.evaluate_update(
             true_input1=prev_inputs,
             true_input2=inputs,
             true_action=all_actions,
@@ -432,3 +363,7 @@ class MainModel:
             was_true_action=was_true_action,
             was_good_sample=was_good_sample,
         )
+        item_costs = res_list[1]
+        input_costs = tf.reduce_mean(tf.reshape(item_costs,[NUM_TILES,IN_LEN]),axis=0)
+        res_list[1] = input_costs
+        return res_list

@@ -1,11 +1,33 @@
 import gym
 from gym_wrapper import Envs
 import tensorflow as tf
-from model import Runner
 import numpy as np
+from model import MainModel
 
 def new_randvec(RAND_SIZE):
     return np.random.binomial(size=[NUM_ENVS,RAND_SIZE], n=1, p=0.5).astype(np.float32)
+
+
+class Runner:
+    def __init__(self,observation_shape,action_shape,LAYER_SIZE,RAND_SIZE):
+        NUM_ENVS = 1
+        self.model = MainModel(action_shape,observation_shape,LAYER_SIZE,RAND_SIZE)
+
+        self.runner_true_input1 = tf.placeholder(shape=[NUM_ENVS,]+observation_shape,dtype=tf.float32)
+        self.runner_true_input2 = tf.placeholder(shape=[NUM_ENVS,]+observation_shape,dtype=tf.float32)
+        self.runner_current_randvec = tf.placeholder(shape=[NUM_ENVS,RAND_SIZE],dtype=tf.float32)
+
+        #self.runner_gen_action = self.model.steady_sample_action(self.runner_true_input1,self.runner_true_input2,NUM_ENVS)
+        self.runner_gen_action = self.model.calc_action(self.runner_true_input1,self.runner_true_input2,self.runner_current_randvec)
+
+    def calc_action(self,sess,prev_input,input,randvec):
+        actions = sess.run(self.runner_gen_action,feed_dict={
+            self.runner_true_input1:prev_input,
+            self.runner_true_input2:input,
+            self.runner_current_randvec:randvec,
+        })
+        return actions
+
 
 envs = Envs(1)
 env = envs.envs[0]
@@ -21,7 +43,7 @@ NUM_ENVS = 1
 
 LAYER_SIZE = 48
 RAND_SIZE = 8
-model = Runner(action_shape,observation_shape,LAYER_SIZE,RAND_SIZE)
+model = Runner(observation_shape,action_shape,LAYER_SIZE,RAND_SIZE)
 
 saver = tf.train.Saver()
 
@@ -39,7 +61,8 @@ with tf.Session() as sess:
         #actions = [env.action_space.sample()]
         if steps % 4 == 0:
             randvec = new_randvec(RAND_SIZE)
-        actions = model.calc_action_data(sess,current_input,prev_input,randvec)
+        actions = model.calc_action(sess,current_input,prev_input,randvec)
+        actions = [actions[0]]
         env.render()
 
         envs.set_actions(actions)
