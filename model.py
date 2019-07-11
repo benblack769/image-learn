@@ -60,8 +60,12 @@ class BatchNorm:
         input /= mags
         return input
 
-def repeat_axis0(tensor,num_repeats):
-    return tf.concat([tensor]*num_repeats,axis=0)
+def repeat_items(tensor,num_repeats):
+    input_shape = tensor.get_shape().as_list()
+    reshape_d0 = tf.reshape(tensor,[input_shape[0]]+[1]+input_shape[1:])
+    tiled = tf.tile(reshape_d0,[1]+[num_repeats]+[1]*(len(input_shape)-1))
+    #flat_tiled = tf.reshape(tiled,[input_shape[0]*num_repeats]+input_shape[1:])
+    return tiled
 
 def batch_norm_activ(input):
     val = input
@@ -124,9 +128,7 @@ class CriticCalculator:
         self.action_processor = StackedDense(3,LAYER_SIZE)
         self.full_combiner = Dense(LAYER_SIZE*2,LAYER_SIZE,None)
         self.actor_critic_calc = StackedDense(3,LAYER_SIZE)
-        self.sampled_prob_cond = Dense(LAYER_SIZE,1,None)
-        self.better_cond = Dense(LAYER_SIZE,1,None)
-        self.randvec_pred_condenser = Dense(LAYER_SIZE,RAND_SIZE,None)
+        self.advantage_condensor = Dense(LAYER_SIZE,1,None)
 
 
     def vars(self):
@@ -138,9 +140,7 @@ class CriticCalculator:
             self.action_processor.vars() +
             self.full_combiner.vars() +
             self.actor_critic_calc.vars() +
-            self.sampled_prob_cond.vars() +
-            self.randvec_pred_condenser.vars() +
-            self.better_cond.vars()
+            self.advantage_condensor.vars()
         )
 
     def calc_eval(self,input_vec):
@@ -162,11 +162,9 @@ class CriticCalculator:
         combined_vec = self.full_combiner.calc(tot_vec)
         fin_vec = self.actor_critic_calc.calc(combined_vec)
 
-        sampled_prob = self.sampled_prob_cond.calc(fin_vec)
-        radvec_prediction = self.randvec_pred_condenser.calc(fin_vec)
-        better_conf = self.better_cond.calc(fin_vec)
+        advantage_val = self.advantage_condensor.calc(fin_vec)
 
-        return [eval_val,sampled_prob,better_conf,radvec_prediction]
+        return [eval_val,advantage_val]
 
 
 class Actor:
@@ -187,6 +185,32 @@ class Actor:
             self.process_resnet.vars() +
             self.condenser.vars())
 
+class Distinguisher:
+    def __init__(self,RAND_SIZE,ACTION_DIM,LAYER_SIZE):
+        self.action_spreader = Dense(ACTION_DIM,LAYER_SIZE,None)
+        self.action_process_net = StackedDense(3,LAYER_SIZE)
+        self.combiner = Dense(LAYER_SIZE*2,LAYER_SIZE,None)
+        self.combined_processor = StackedDense(3,LAYER_SIZE)
+        self.condenser = Dense(LAYER_SIZE,1,None)
+        self.randvec_pred_condenser = Dense(LAYER_SIZE,RAND_SIZE,None)
+
+    def vars(self):
+        return (self.action_spreader.vars() +
+            self.action_process_net.vars() +
+            self.combiner.vars() +
+            self.combined_processor.vars() +
+            self.condenser.vars() +
+            self.randvec_pred_condenser.vars())
+
+    def calc(self,input_vec,action):
+        in_spread = self.action_spreader.calc(action)
+        calced_action_vec = self.action_process_net.calc(in_spread)
+        concatted = tf.concat([input_vec,calced_action_vec],axis=1)
+        combined = self.combiner.calc(concatted)
+        processed = self.combined_processor.calc(combined)
+        fin_action = self.condenser.calc(processed)
+        randvec_pred = self.randvec_pred_condenser.calc(processed)
+        return fin_action,randvec_pred
 
 
 class MainModel:
@@ -195,13 +219,16 @@ class MainModel:
         RAND_SIZE):
         action_size = prod(action_shape)
         observation_size = prod(observation_shape)
+        self.observation_shape = observation_shape
         self.action_shape = action_shape
         self.RAND_SIZE = RAND_SIZE
 
         self.actor_input_processor = InputProcessor(observation_size,LAYER_SIZE,LAYER_SIZE)
         self.critic_input_processor = InputProcessor(observation_size,LAYER_SIZE,LAYER_SIZE)
+        self.distinguisher_input_processor = InputProcessor(observation_size,LAYER_SIZE,LAYER_SIZE)
         self.critic_calculator = CriticCalculator(action_size,RAND_SIZE,LAYER_SIZE)
         self.actor = Actor(RAND_SIZE,action_size,LAYER_SIZE)
+        self.distinguisher = Distinguisher(RAND_SIZE,action_size,LAYER_SIZE)
 
     def calc_action(self,input1,input2,randvec):
         input_vec = self.actor_input_processor.calc(input1,input2)
@@ -213,6 +240,16 @@ class MainModel:
         eval = self.critic_calculator.calc_eval(input_vec)
         return eval
 
+    def calc_advantage(self,input1,input2,actions):
+        input_vec = self.critic_input_processor.calc(input1,input2)
+        eval,adv = self.critic_calculator.calc(input_vec,actions)
+        return adv
+
+    def calc_distinguish(self,input1,input2,actions,randvals):
+        distinguisher_vec = self.distinguisher_input_processor.calc(input1,input2)
+        is_true_logits,randvec_pred = self.distinguisher.calc(actions,randvals)
+        return is_true_logits,randvec_pred
+
     def random_actions(self,shape):
         return tf.random_uniform(shape=shape+self.action_shape,minval=-1,maxval=1,dtype=tf.float32)
 
@@ -221,149 +258,100 @@ class MainModel:
         rand_float = tf.cast(rand_int,tf.float32)
         return rand_float
 
-    def calc_better_prob(self,input1,input2,actions):
-        input_vec = self.critic_input_processor.calc(input1,input2)
-        eval,_,_,_ = self.critic_calculator.calc_eval(input_vec)
-        return eval
+    def calc_sample_batch(self,input1,input2,num_samples,IN_LEN):
+        def spread(vals,factor=1):
+            return tf.reshape(vals,[IN_LEN,num_samples*factor]+vals.get_shape().as_list()[1:])
+        def flatten(vals,factor=1):
+            return tf.reshape(vals,[IN_LEN*num_samples*factor]+vals.get_shape().as_list()[2:])
 
-    def evaluate_better_prob(self,input1,input2,actions):
-        input_vec = self.critic_input_processor.calc(input1,input2)
-        _,_,better_logits,_ = self.critic_calculator.calc(input_vec,actions)
-        better_probs = tf.sigmoid(better_logits)
-        return better_probs
-
-    def evaluate_update(self,
-        true_input1,
-        true_input2,
-        true_action,
-        true_eval,
-        current_randvec,
-        was_true_action,
-        was_good_sample):
-
-        actor_input_vector = self.actor_input_processor.calc(true_input1,true_input2)
-        critic_input_vector = self.critic_input_processor.calc(true_input1,true_input2)
-        eval,sampled_logits,better_logits,randvec_pred = self.critic_calculator.calc(critic_input_vector,true_action)
-        chosen_action = self.actor.calc(actor_input_vector,current_randvec)
-
-        better_comparitor = tf.stop_gradient(tf.cast(tf.math.greater(true_eval,eval),tf.float32))
-        better_cost = tf_sumd1(was_true_action * tf.nn.sigmoid_cross_entropy_with_logits(labels=better_comparitor,logits=better_logits))
-        eval_cost = tf_sumd1(was_true_action * sqr(eval-true_eval))
-        sampled_cost = tf_sumd1((1.0-was_true_action) * tf.nn.sigmoid_cross_entropy_with_logits(labels=was_good_sample,logits=sampled_logits))
-        #advantage_comparitor = tf.stop_gradient(-(true_eval - eval))
-        was_randvec_sampled = (1.0-was_true_action) * (1.0-was_good_sample)
-        randvec_pred_cost = tf_sumd1(was_randvec_sampled * sqr(current_randvec - randvec_pred))
-
-        tot_cost = (
-            better_cost +
-            sampled_cost +
-            eval_cost +
-            randvec_pred_cost
+        gen_actions = self.calc_action(
+            flatten(repeat_items(input1,num_samples)),
+            flatten(repeat_items(input2,num_samples)),
+            self.gen_randoms(num_samples*IN_LEN)
         )
+        random_actions = self.random_actions([IN_LEN,num_samples])
+        all_actions = tf.concat([spread(gen_actions),random_actions],axis=1)
+        action_vals = self.calc_advantage(
+            flatten(repeat_items(input1,num_samples*2),2),
+            flatten(repeat_items(input2,num_samples*2),2),
+            flatten(all_actions,2)
+        )
+        return all_actions,spread(action_vals,2)
 
-        critic_learning_rate = 0.0001
-        actor_learning_rate = 0.00001
+    def critic_update(self,prev_input,cur_input,next_input,action,true_reward):
+        next_eval = tf.stop_gradient(self.calc_eval(cur_input,next_input))
+        true_eval = next_eval * 0.9 + true_reward
+
+        critic_input_vector = self.critic_input_processor.calc(prev_input,cur_input)
+        eval,advantage = self.critic_calculator.calc(critic_input_vector,action)
+
+        advantage_comparitor = tf.stop_gradient((eval - true_eval))#tf.stop_gradient(tf.cast(tf.math.greater(true_eval,eval),tf.float32))
+        advantage_cost = tf_sum(sqr(advantage_comparitor - advantage))
+        eval_cost = tf_sum(sqr(eval - true_eval))
+
+        tot_cost = advantage_cost + eval_cost
+
+        critic_learning_rate = 0.001
         critic_optimzer = tf.train.RMSPropOptimizer(learning_rate=critic_learning_rate)
+
+        all_vars = (
+            self.critic_input_processor.vars() +
+            self.critic_calculator.vars()
+        )
+        update = critic_optimzer.minimize(tot_cost,var_list=all_vars)
+        return update,tot_cost
+
+    def destinguisher_update(self,input1,input2,actions_true,IN_LEN):
+        gen_randvals = self.gen_randoms(IN_LEN)
+        actions_gen = self.calc_action(input1,input2,gen_randvals)
+
+        actions = tf.concat([actions_true,actions_gen],axis=0)
+        comparitors = tf.concat([tf.ones([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
+        info_mask = tf.concat([tf.zeros([IN_LEN,1]),tf.ones([IN_LEN,1])],axis=0)
+        randvals = tf.concat([tf.zeros_like(gen_randvals),gen_randvals],axis=0)
+
+        def tile(inpt):
+            return tf.tile(inpt,[2]+[1]*(len(inpt.get_shape().as_list())-1))
+
+        distinguisher_vec = self.distinguisher_input_processor.calc(tile(input1),tile(input2))
+        is_true_logits,randvec_pred = self.distinguisher.calc(distinguisher_vec,actions)
+
+        distinguish_cost = tf_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=is_true_logits,labels=comparitors))
+        info_cost = tf_sum(info_mask*sqr(randvec_pred-randvals))
+        tot_cost = distinguish_cost + info_cost
+
+        distinguisher_learning_rate = 0.001
+        distinguisher_optimzer = tf.train.RMSPropOptimizer(learning_rate=distinguisher_learning_rate)
+
+        all_vars = (
+            self.distinguisher.vars() +
+            self.distinguisher_input_processor.vars()
+        )
+        update = distinguisher_optimzer.minimize(tot_cost,var_list=all_vars)
+
+        return update,tot_cost
+
+    def actor_update(self,input1,input2,IN_LEN):
+        randvals = self.gen_randoms(IN_LEN)
+        actions = self.calc_action(input1,input2,randvals)
+
+        distinguisher_vec = self.distinguisher_input_processor.calc(input1,input2)
+        is_true_logits,randvec_pred = self.distinguisher.calc(distinguisher_vec,actions)
+        is_true_logits,randvec_pred = is_true_logits, randvec_pred
+
+        #is_true_probs = tf.sigmoid(is_true_logits)
+
+        is_true_cost = tf_sum(-is_true_logits) #maximize probs
+        randvec_cost = tf_sum(sqr(randvec_pred - randvals))
+
+        tot_cost = is_true_cost + randvec_cost
+
+        actor_learning_rate = 0.0901
         actor_optimzer = tf.train.GradientDescentOptimizer(learning_rate=actor_learning_rate)
 
-        _,critic_update_op,critic_grad_mag = calc_apply_grads(
-            inputs=[true_input1,true_input2],
-            outputs=[tot_cost],
-            outputs_costs=[1.0],
-            variables=self.critic_calculator.vars() + self.critic_input_processor.vars(),
-            optimizer=critic_optimzer
+        all_vars = (
+            self.actor.vars() +
+            self.actor_input_processor.vars()
         )
-        _,actor_sampled_logits,actor_better_logits,actor_randvec_pred = self.critic_calculator.calc(critic_input_vector,chosen_action)
-        actor_better_probs = tf.sigmoid(actor_better_logits)
-        actor_randvec_pred_costs = 0.01*tf_sumd1(sqr(current_randvec - actor_randvec_pred))
-        actor_sampled_costs = tf_sumd1(-actor_sampled_logits)
-        actor_better_costs = 0#tf_sumd1(-actor_better_logits)
-        total_actor_cost = actor_sampled_costs + actor_better_costs + actor_randvec_pred_costs
-
-        _,actor_update_op,actor_grad_mag = calc_apply_grads(
-            inputs=[critic_input_vector],
-            outputs=[total_actor_cost],
-            outputs_costs=[1.0],
-            variables=self.actor.vars() + self.actor_input_processor.vars(),
-            optimizer=actor_optimzer
-        )
-
-        combined_update = tf.group(
-            actor_update_op,
-            critic_update_op
-        )
-        return [combined_update,better_cost,tf_sum(better_cost),tf_sum(eval_cost),tf_sum(sampled_cost),tf_sum(randvec_pred_cost),chosen_action[0]]
-
-    def steady_sample_action(self,input1,input2,IN_LEN):
-        num_inputs = IN_LEN
-        NUM_CALCS = 8
-        calced_samples = self.calc_action(
-            input1=repeat_axis0(input1, NUM_CALCS),
-            input2=repeat_axis0(input2, NUM_CALCS),
-            randvec=self.gen_randoms(num_inputs*NUM_CALCS)
-        )
-        NUM_RAW = 8
-        NUM_SAMP = NUM_RAW + NUM_CALCS
-        raw_samples = self.random_actions([num_inputs*NUM_RAW])
-        action_size = prod(self.action_shape)
-        reshaped_calcs = tf.reshape(calced_samples,[num_inputs,NUM_CALCS,action_size])
-        reshaped_raws = tf.reshape(raw_samples,[num_inputs,NUM_RAW,action_size])
-        all_samples = tf.concat([reshaped_calcs,reshaped_raws],axis=1)
-        flat_samples = tf.reshape(all_samples,[NUM_SAMP*num_inputs,action_size])
-
-        sample_probs = self.evaluate_better_prob(
-            input1=repeat_axis0(input1, NUM_SAMP),
-            input2=repeat_axis0(input2, NUM_SAMP),
-            actions=flat_samples
-        )
-        target_probs = sqr(tf.random_uniform(shape=[num_inputs,NUM_SAMP],maxval=1.0))
-
-        reshaped_probs = tf.reshape(sample_probs,[num_inputs,NUM_SAMP])
-        distance_target = sqr(reshaped_probs - target_probs)
-        best_choices = tf.argmax(-distance_target,axis=1,output_type=tf.int32)
-        #print(reshaped_probs[0])
-        #print(reshaped_probs[1])
-        #print(np.asarray([reshaped_probs[samp_idx][best_idx] for (samp_idx, best_idx) in enumerate(best_choices)],dtype=np.float32))
-        choice_idxs = tf.range(num_inputs,dtype=tf.int32)*NUM_SAMP+best_choices
-        best_actions = tf.gather(flat_samples,choice_idxs,axis=0)
-        return best_actions
-
-    def run_update(self,stored_data,IN_LEN):
-        next_eval = self.calc_eval(stored_data.cur_input,stored_data.next_input)
-        true_eval = next_eval * 0.9 + stored_data.true_reward
-
-        true_actions = stored_data.action
-        sampled_actions = self.steady_sample_action(
-            stored_data.prev_input,
-            stored_data.cur_input,
-            IN_LEN
-        )
-        gen_random_vals = self.gen_randoms(IN_LEN)
-        gen_actions = self.calc_action(
-            stored_data.prev_input,
-            stored_data.cur_input,
-            gen_random_vals
-        )
-        all_actions = tf.concat([true_actions,sampled_actions,gen_actions],axis=0)
-        all_randvecs = tf.concat([self.gen_randoms(IN_LEN*2),gen_random_vals],axis=0)
-        all_true_evals = tf.concat([true_eval,tf.zeros([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
-        was_good_sample = tf.concat([tf.zeros([IN_LEN,1]),tf.ones([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
-        was_true_action = tf.concat([tf.ones([IN_LEN,1]),tf.zeros([IN_LEN,1]),tf.zeros([IN_LEN,1])],axis=0)
-
-        NUM_TILES = 3
-        prev_inputs = repeat_axis0(stored_data.prev_input,NUM_TILES)
-        inputs = repeat_axis0(stored_data.cur_input,NUM_TILES)
-
-        res_list = self.evaluate_update(
-            true_input1=prev_inputs,
-            true_input2=inputs,
-            true_action=all_actions,
-            current_randvec=all_randvecs,
-            true_eval=all_true_evals,
-            was_true_action=was_true_action,
-            was_good_sample=was_good_sample,
-        )
-        item_costs = res_list[1]
-        input_costs = tf.reduce_mean(tf.reshape(item_costs,[NUM_TILES,IN_LEN]),axis=0)
-        res_list[1] = input_costs
-        return res_list
+        update = actor_optimzer.minimize(tot_cost,var_list=all_vars)
+        return update,tot_cost
