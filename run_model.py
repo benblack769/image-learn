@@ -41,7 +41,7 @@ observation_shape = list(envs.observation_space())
 
 NUM_ENVS = 1
 
-LAYER_SIZE = 48
+LAYER_SIZE = 80
 RAND_SIZE = 8
 model = Runner(observation_shape,action_shape,LAYER_SIZE,RAND_SIZE)
 

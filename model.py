@@ -69,7 +69,7 @@ def repeat_items(tensor,num_repeats):
 
 def batch_norm_activ(input):
     val = input
-    val = batch_norm(val)
+    #val = batch_norm(val)
     val = tf.nn.relu(val)
     return val
 
@@ -276,7 +276,8 @@ class MainModel:
             flatten(repeat_items(input2,num_samples*2),2),
             flatten(all_actions,2)
         )
-        return all_actions,spread(action_vals,2)
+        action_vals = tf.reshape(action_vals,[IN_LEN,num_samples*2])
+        return all_actions,action_vals
 
     def critic_update(self,prev_input,cur_input,next_input,action,true_reward):
         next_eval = tf.stop_gradient(self.calc_eval(cur_input,next_input))
@@ -318,7 +319,7 @@ class MainModel:
 
         distinguish_cost = tf_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=is_true_logits,labels=comparitors))
         info_cost = tf_sum(info_mask*sqr(randvec_pred-randvals))
-        tot_cost = distinguish_cost + info_cost
+        tot_cost = distinguish_cost# + info_cost
 
         distinguisher_learning_rate = 0.001
         distinguisher_optimzer = tf.train.RMSPropOptimizer(learning_rate=distinguisher_learning_rate)
@@ -344,9 +345,9 @@ class MainModel:
         is_true_cost = tf_sum(-is_true_logits) #maximize probs
         randvec_cost = tf_sum(sqr(randvec_pred - randvals))
 
-        tot_cost = is_true_cost + randvec_cost
+        tot_cost = is_true_cost #+ randvec_cost
 
-        actor_learning_rate = 0.0901
+        actor_learning_rate = 0.0001
         actor_optimzer = tf.train.GradientDescentOptimizer(learning_rate=actor_learning_rate)
 
         all_vars = (
