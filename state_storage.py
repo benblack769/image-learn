@@ -40,6 +40,12 @@ class StoredData:
 def concat_stores(data1,data2):
     return StoredData.from_list([np.concatenate([d1,d2],axis=0) for d1,d2 in zip(data1.listify(),data2.listify())])
 
+def sample_data_by_weights(store_data,weights,sample_size):
+    weights = np.reshape(weights,[len(weights)])
+    sum = np.sum(weights)
+    idxs = np.random.choice(len(weights),size=sample_size,p=weights/sum,replace=False)
+    return StoredData.from_list([d[idxs] for d in store_data.listify()])
+
 class StateQueue:
     KEEP_SIZE = 3
 

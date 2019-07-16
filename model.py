@@ -70,7 +70,8 @@ def repeat_items(tensor,num_repeats):
 def batch_norm_activ(input):
     val = input
     #val = batch_norm(val)
-    val = tf.nn.relu(val)
+    val = tf.nn.leaky_relu(val,alpha=0.2)
+    #dropped = tf.nn.dropout(
     return val
 
 class StackedDense:
@@ -272,12 +273,26 @@ class MainModel:
         random_actions = self.random_actions([IN_LEN,num_samples])
         all_actions = tf.concat([spread(gen_actions),random_actions],axis=1)
         action_vals = self.calc_advantage(
-            flatten(repeat_items(input1,num_samples*2),2),
-            flatten(repeat_items(input2,num_samples*2),2),
+            flatten(tf.concat([repeat_items(input1,num_samples)]*2,axis=0),2),
+            flatten(tf.concat([repeat_items(input2,num_samples)]*2,axis=0),2),
             flatten(all_actions,2)
         )
         action_vals = tf.reshape(action_vals,[IN_LEN,num_samples*2])
-        return all_actions,action_vals
+
+        sample_batch_actions,sample_batch_logits = all_actions,action_vals
+        sample_idxs = tf.multinomial(sample_batch_logits,1)
+        sample_idxs = tf.reshape(sample_idxs,[IN_LEN,])
+        #self.sample_probs = tf.nn.softmax(sample_batch_logits,axis=1)
+        #self.probs = tf.gather_nd(self.sample_probs,sample_idxs)
+        flat_actions = tf.reshape(sample_batch_actions,[IN_LEN*num_samples*2,]+self.action_shape)
+        flat_sample_idxs = tf.range(IN_LEN,dtype=tf.int64)*num_samples*2 + sample_idxs
+
+        flat_probs = tf.reshape(tf.nn.softmax(sample_batch_logits),[IN_LEN*num_samples*2])
+        sample_probs = (tf.gather(flat_probs,flat_sample_idxs,axis=0))
+
+        sample_actions = tf.gather(flat_actions,flat_sample_idxs,axis=0)
+
+        return sample_actions,sample_probs
 
     def critic_update(self,prev_input,cur_input,next_input,action,true_reward):
         next_eval = tf.stop_gradient(self.calc_eval(cur_input,next_input))
@@ -312,7 +327,7 @@ class MainModel:
         randvals = tf.concat([tf.zeros_like(gen_randvals),gen_randvals],axis=0)
 
         def tile(inpt):
-            return tf.tile(inpt,[2]+[1]*(len(inpt.get_shape().as_list())-1))
+            return tf.concat([inpt,inpt],axis=0)#tf.tile(inpt,[2]+[1]*(len(inpt.get_shape().as_list())-1))
 
         distinguisher_vec = self.distinguisher_input_processor.calc(tile(input1),tile(input2))
         is_true_logits,randvec_pred = self.distinguisher.calc(distinguisher_vec,actions)
@@ -348,7 +363,7 @@ class MainModel:
         tot_cost = is_true_cost #+ randvec_cost
 
         actor_learning_rate = 0.0001
-        actor_optimzer = tf.train.GradientDescentOptimizer(learning_rate=actor_learning_rate)
+        actor_optimzer = tf.train.RMSPropOptimizer(learning_rate=actor_learning_rate)
 
         all_vars = (
             self.actor.vars() +
