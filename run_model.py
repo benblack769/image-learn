@@ -17,8 +17,8 @@ class Runner:
         self.runner_true_input2 = tf.placeholder(shape=[NUM_ENVS,]+observation_shape,dtype=tf.float32)
         self.runner_current_randvec = tf.placeholder(shape=[NUM_ENVS,RAND_SIZE],dtype=tf.float32)
 
-        self.runner_gen_action,_ = self.model.calc_sample_batch(self.runner_true_input1,self.runner_true_input2,8,NUM_ENVS)
-        #self.runner_gen_action = self.model.calc_action(self.runner_true_input1,self.runner_true_input2,self.runner_current_randvec)
+        #self.runner_gen_action,_ = self.model.calc_sample_batch(self.runner_true_input1,self.runner_true_input2,8,NUM_ENVS)
+        self.runner_gen_action = self.model.calc_action(self.runner_true_input1,self.runner_true_input2,self.runner_current_randvec)
 
     def calc_action(self,sess,prev_input,input,randvec):
         actions = sess.run(self.runner_gen_action,feed_dict={
@@ -41,7 +41,7 @@ observation_shape = list(envs.observation_space())
 
 NUM_ENVS = 1
 
-LAYER_SIZE = 64
+LAYER_SIZE = 128
 RAND_SIZE = 8
 model = Runner(observation_shape,action_shape,LAYER_SIZE,RAND_SIZE)
 

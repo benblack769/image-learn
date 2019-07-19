@@ -70,8 +70,9 @@ def repeat_items(tensor,num_repeats):
 def batch_norm_activ(input):
     val = input
     #val = batch_norm(val)
+    val = tf.layers.BatchNormalization()(val)
     val = tf.nn.leaky_relu(val,alpha=0.2)
-    #dropped = tf.nn.dropout(
+    val = tf.nn.dropout(val,keep_prob=0.8)
     return val
 
 class StackedDense:
@@ -91,7 +92,7 @@ class StackedDense:
     def vars(self):
         return sum((l.vars() for l in self.layers),[])
 
-class ResetDense:
+class ResNetDense:
     def __init__(self,num_folds,layers_per,layer_size):
         assert num_folds > 0
         self.dense_stack = [StackedDense(layers_per,layer_size) for _ in range(num_folds)]
@@ -109,7 +110,7 @@ class ResetDense:
 class InputProcessor:
     def __init__(self,INPUT_DIM,OUTPUT_DIM,LAYER_SIZE):
         self.input_spreader = Dense(INPUT_DIM*2,LAYER_SIZE,None)
-        self.process_resnet = ResetDense(4,2,LAYER_SIZE)
+        self.process_resnet = StackedDense(3,LAYER_SIZE)
 
     def calc(self,input1,input2):
         concat = tf.concat([input1,input2],axis=1)
@@ -130,7 +131,6 @@ class CriticCalculator:
         self.full_combiner = Dense(LAYER_SIZE*2,LAYER_SIZE,None)
         self.actor_critic_calc = StackedDense(3,LAYER_SIZE)
         self.advantage_condensor = Dense(LAYER_SIZE,1,None)
-
 
     def vars(self):
         return (
@@ -171,7 +171,7 @@ class CriticCalculator:
 class Actor:
     def __init__(self,RAND_SIZE,ACTION_DIM,LAYER_SIZE):
         self.input_spreader = Dense(RAND_SIZE+LAYER_SIZE,LAYER_SIZE,None)
-        self.process_resnet = ResetDense(4,2,LAYER_SIZE)
+        self.process_resnet = StackedDense(2,LAYER_SIZE)
         self.condenser = Dense(LAYER_SIZE,ACTION_DIM,tf.tanh)
 
     def calc(self,input_vec,rand_vec):
@@ -244,7 +244,7 @@ class MainModel:
     def calc_advantage(self,input1,input2,actions):
         input_vec = self.critic_input_processor.calc(input1,input2)
         eval,adv = self.critic_calculator.calc(input_vec,actions)
-        return adv
+        return eval,adv
 
     def calc_distinguish(self,input1,input2,actions,randvals):
         distinguisher_vec = self.distinguisher_input_processor.calc(input1,input2)
@@ -272,9 +272,9 @@ class MainModel:
         )
         random_actions = self.random_actions([IN_LEN,num_samples])
         all_actions = tf.concat([spread(gen_actions),random_actions],axis=1)
-        action_vals = self.calc_advantage(
-            flatten(tf.concat([repeat_items(input1,num_samples)]*2,axis=0),2),
-            flatten(tf.concat([repeat_items(input2,num_samples)]*2,axis=0),2),
+        _,action_vals = self.calc_advantage(
+            flatten(repeat_items(input1,num_samples*2),2),
+            flatten(repeat_items(input2,num_samples*2),2),
             flatten(all_actions,2)
         )
         action_vals = tf.reshape(action_vals,[IN_LEN,num_samples*2])
@@ -308,7 +308,7 @@ class MainModel:
         tot_cost = advantage_cost + eval_cost
 
         critic_learning_rate = 0.001
-        critic_optimzer = tf.train.RMSPropOptimizer(learning_rate=critic_learning_rate)
+        critic_optimzer = tf.train.AdamOptimizer(learning_rate=critic_learning_rate)
 
         all_vars = (
             self.critic_input_processor.vars() +
@@ -334,10 +334,10 @@ class MainModel:
 
         distinguish_cost = tf_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=is_true_logits,labels=comparitors))
         info_cost = tf_sum(info_mask*sqr(randvec_pred-randvals))
-        tot_cost = distinguish_cost# + info_cost
+        tot_cost = distinguish_cost + info_cost
 
-        distinguisher_learning_rate = 0.001
-        distinguisher_optimzer = tf.train.RMSPropOptimizer(learning_rate=distinguisher_learning_rate)
+        distinguisher_learning_rate = 0.0001
+        distinguisher_optimzer = tf.train.AdamOptimizer(learning_rate=distinguisher_learning_rate)
 
         all_vars = (
             self.distinguisher.vars() +
@@ -360,10 +360,10 @@ class MainModel:
         is_true_cost = tf_sum(-is_true_logits) #maximize probs
         randvec_cost = tf_sum(sqr(randvec_pred - randvals))
 
-        tot_cost = is_true_cost #+ randvec_cost
+        tot_cost = is_true_cost + randvec_cost
 
         actor_learning_rate = 0.0001
-        actor_optimzer = tf.train.RMSPropOptimizer(learning_rate=actor_learning_rate)
+        actor_optimzer = tf.train.AdamOptimizer(learning_rate=actor_learning_rate,beta1=0.5)
 
         all_vars = (
             self.actor.vars() +

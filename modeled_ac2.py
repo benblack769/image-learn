@@ -12,15 +12,15 @@ from tensorflow.data import Dataset
 
 NUM_ENVS = 128
 
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 
-LAYER_SIZE = 64
+LAYER_SIZE = 128
 RAND_SIZE = 8
 
-NUM_EPOCS = 5
-BATCHES_PER_EPOC = 200
+NUM_EPOCS = 3
+BATCHES_PER_EPOC = 300
 
-BATCHES_TO_KEEP = 500
+BATCHES_TO_KEEP = 2500
 KEEP_SIZE = NUM_ENVS*(BATCHES_TO_KEEP-2)
 
 def change_shape(*data_tensors):
@@ -45,14 +45,15 @@ class Runner:
         )
 
         next_eval = model.calc_eval(self.calc_plc_hold.cur_input,self.calc_plc_hold.next_input)
-        cur_advantage = model.calc_advantage(self.calc_plc_hold.prev_input,self.calc_plc_hold.cur_input,self.calc_plc_hold.action)
+        cur_eval,cur_advantage = model.calc_advantage(self.calc_plc_hold.prev_input,self.calc_plc_hold.cur_input,self.calc_plc_hold.action)
         true_eval = next_eval * 0.9 + self.calc_plc_hold.true_reward
-        self.adv_calc_advantage_cost = sqr(true_eval-cur_advantage)
+        advantage_comparitor = ((cur_eval - true_eval))
+        self.adv_calc_advantage_cost = sqr(advantage_comparitor-cur_advantage)
 
-        gen_randvec = model.gen_randoms(NUM_ENVS)
-        self.gen_actions = model.calc_action(self.runner_true_input1,self.runner_true_input2,gen_randvec)
-        #RUN_NUM_SAMPLES = 4
-        #self.gen_actions,_ = model.calc_sample_batch(self.runner_true_input1,self.runner_true_input2,RUN_NUM_SAMPLES,NUM_ENVS)
+        #gen_randvec = model.gen_randoms(NUM_ENVS)
+        #self.gen_actions = model.calc_action(self.runner_true_input1,self.runner_true_input2,gen_randvec)
+        RUN_NUM_SAMPLES = 8
+        self.gen_actions,_ = model.calc_sample_batch(self.runner_true_input1,self.runner_true_input2,RUN_NUM_SAMPLES,NUM_ENVS)
 
         self.store_placeholds = StoredData(
             prev_input=tf.placeholder(shape=[KEEP_SIZE,]+model.observation_shape,dtype=tf.float32),
@@ -136,7 +137,9 @@ def main():
     os.makedirs("save_model",exist_ok=True)
     SAVE_NAME = "save_model/model.ckpt"
 
-    with tf.Session() as sess:
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.4)
+
+    with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         sess.run(tf.global_variables_initializer())
         if os.path.exists(SAVE_NAME+".index"):
             saver.restore(sess, SAVE_NAME)
@@ -174,9 +177,9 @@ def main():
             if all_stores is None:
                 all_stores = iter_store.consoladate()
             else:
-                all_stores = concat_stores(all_stores,iter_store.consoladate())
                 all_weights = runner.run_all_adv_costs(sess,all_stores)
-                all_stores = sample_data_by_weights(all_stores,all_weights,KEEP_SIZE)
+                all_stores = sample_data_by_weights(all_stores,all_weights,KEEP_SIZE-NUM_ENVS*(BATCHES_PER_EPOC-2))
+                all_stores = concat_stores(all_stores,iter_store.consoladate())
 
             runner.set_store_data(sess,all_stores)
 
